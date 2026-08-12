@@ -1,9 +1,11 @@
-# PYME Agent — Fase 0 (Multi-tenant WhatsApp scaffold)
+# Agente Liah
 
-Scaffold de grado producción: FastAPI async + PostgreSQL/pgvector, aislación
-multi-tenant por `tenant_id`, webhook de Meta WhatsApp con verificación de
-token (GET) y firma HMAC `X-Hub-Signature-256` (POST), resolución de tenant
-vía `phone_number_id`, y persistencia inmutable de mensajes.
+> El asistente de WhatsApp que atiende, agenda y da seguimiento a los clientes de tu pyme, 24/7 y con tu tono.
+
+Scaffold de grado producción multi-tenant (FastAPI async + PostgreSQL/pgvector): un solo
+motor de agente parametrizado por negocio, para academias de danza, escuelas, barberías y
+consultorios. Fase 0 = tubería de entrada (Webhook → Seguridad → Identificación de Tenant →
+Persistencia). Fase 1+ = motor de agente (RAG + tool-calling) y calendario como fuente de verdad.
 
 ## Levantar en local (Mac, con Docker)
 
