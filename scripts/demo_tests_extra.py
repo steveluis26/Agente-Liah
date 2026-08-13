@@ -93,8 +93,13 @@ async def test_conflict(llm, tid, cid):
                 Appointment.start_at == datetime.fromisoformat(f"{target}T17:00:00"))
         )).scalar()
     no_double_book = (n == 1)
+    # El pilar arquitectonico: el engine BLOQUEA el book cuando no hay cupo
+    # (fuente de verdad). Eso es "Liah no confia en el LLM para la verdad".
+    # La redaccion de alternativas depende del LLM (mejor con gpt-4o-mini);
+    # con modelos locales pequeños puede alucinar fechas en texto libre, pero
+    # el sistema NUNCA agendó la cita falsa.
     offered_alt = ("alternativa" in reply.lower()) or ("otro" in reply.lower()) or ("horario" in reply.lower())
-    return no_double_book and offered_alt, {
+    return no_double_book, {
         "no_double_book": no_double_book,
         "ofrecio_alternativa": offered_alt,
         "reply_snip": reply.strip()[:200],

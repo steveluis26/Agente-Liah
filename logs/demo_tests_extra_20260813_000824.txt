@@ -1,0 +1,13 @@
+LIAH — ARCHITECTURE TESTS (gratis, provider-agnostic)
+LLM: OllamaLLM  Model: qwen2.5:7b
+
+[conflict] cita existente 17:00 -> NO book + ofrece alt: FAIL
+    {'no_double_book': True, 'ofrecio_alternativa': False, 'reply_snip': 'Perfecto, parece que tienes disponible una cita a las 17:00 del día 15 de abril. ¿Te gustaría reservarla?\n\nSi no es el día que buscabas, puedes darme la fecha correcta y la reservo para ti.'}
+
+[hallucination] fuera de KB -> no inventa: PASS
+    {'invento': False, 'reply_snip': 'Lo siento, no encuentro información específica sobre el precio de las clases de piano en nuestra base de conocimientos actualmente. Podría ser útil si nos proporcionaras más detalles o te ayudamos con'}
+
+[handoff] duda sensible -> abre handoff: PASS
+    {'handoff_abierto': True, 'reply_snip': 'Se ha escalado tu solicitud a un humano para poder asistirte con el problema del pago. Un miembro de nuestro equipo te contactará pronto. Gracias por tu comprensión.'}
+
+RESULT: ALGUNOS FAIL ⚠️
