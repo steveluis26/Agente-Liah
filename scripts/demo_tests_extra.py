@@ -53,7 +53,11 @@ async def setup():
     try:
         embedder = OpenAIEmbedder()
     except RuntimeError:
-        embedder = FakeEmbedder()
+        try:
+            from app.agent.ollama_embedder import OllamaEmbedder
+            embedder = OllamaEmbedder()
+        except Exception:
+            embedder = FakeEmbedder()
     set_embedder(embedder)
     llm = build_llm()
     async with db_mod.async_session_maker() as s:
