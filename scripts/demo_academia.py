@@ -67,10 +67,15 @@ async def _setup_tenant_and_kb(embedder):
             tenant_id=t.id,
             system_prompt=(
                 "Eres Liah, la asistente virtual de la Academia de Danza Baila Ya. "
-                "Hablas con tono jovial, cercano y profesional. Ayudas con precios, "
-                "horarios y agendamiento de clases muestra. Usa las herramientas "
-                "disponibles para consultar la base de conocimiento y agendar citas. "
-                "Si no sabes algo, pregunta o escala a un humano."
+                "Hablas con tono jovial, cercano y profesional. "
+                "REGLAS OBLIGATORIAS: "
+                "1) SIEMPRE usa la herramienta search_knowledge_base para responder "
+                "cualquier duda sobre precios, horarios, estilos de danza, edades, "
+                "direccion o reglamento. NUNCA digas que no tienes informacion ni "
+                "inventes datos; busca primero. "
+                "2) Para agendar clases muestra usa check_availability y luego "
+                "book_appointment. "
+                "3) Si la duda es sensible, usa escalate_to_human."
             ),
             tone="jovial",
             privacy_notice="Tus datos se usan solo para atender tu consulta (LFPDPPP).",
@@ -139,18 +144,15 @@ async def _book_via_tools(tid, contact_id, llm, date, time_slot):
 
 
 async def _simulate_reminder_cron(tid):
-    """Simula el scheduler: cita mañana -> genera reminder_log (dry-run)."""
+    """Simula el scheduler sobre la clase muestra YA agendada por el cliente."""
     from app.reminders import dispatch
 
-    tomorrow = datetime.now() + timedelta(days=1)
     async with db_mod.async_session_maker() as s:
-        # insertamos una clase muestra para mañana (como si el agente la agendó)
-        c = (await s.execute(select(Contact).where(Contact.tenant_id == tid))).scalar_one()
-        appt = Appointment(tenant_id=tid, contact_id=c.id, type="trial_class",
-                            start_at=tomorrow.replace(hour=17, minute=0, second=0, microsecond=0))
-        s.add(appt)
-        await s.commit()
-
+        # usa la cita de clase muestra que el agente agendó (no inserta dummy)
+        appts = (await s.execute(
+            select(Appointment).where(
+                Appointment.tenant_id == tid, Appointment.type == "trial_class")
+        )).scalars().all()
         targets = await dispatch.load_rule_targets(
             s, tid, "Academia Baila Ya", "trial_class", datetime.now()
         )
@@ -172,16 +174,43 @@ async def _simulate_reminder_cron(tid):
 
 
 async def main():
+    import httpx as _httpx
+
+    # Embedder: OpenAI si hay key, si no FakeEmbedder (la KB del demo es pequeña)
+    try:
+        embedder = OpenAIEmbedder()
+        print("Usando OpenAIEmbedder (OPENAI_API_KEY presente)")
+    except RuntimeError:
+        embedder = FakeEmbedder()
+        print("Usando FakeEmbedder (sin OPENAI_API_KEY)")
+
+    # LLM: OpenAI real si hay key; si no, Ollama local (gratis, sin cuenta)
     key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        raise SystemExit(
-            "❌ OPENAI_API_KEY no está definida. Exponla antes de correr el demo:\n"
-            "   export OPENAI_API_KEY=sk-...\n"
-            "   python scripts/demo_academia.py"
-        )
-    embedder = OpenAIEmbedder()
+    if key:
+        llm = OpenAILLM()
+        print("LLM: OpenAI (gpt-4o-mini)")
+    else:
+        ollama_up = False
+        try:
+            async with _httpx.AsyncClient(timeout=3) as c:
+                r = await c.get("http://localhost:11434/api/tags")
+                ollama_up = r.status_code == 200
+        except Exception:
+            ollama_up = False
+        if ollama_up:
+            from app.agent.ollama_llm import OllamaLLM
+
+            llm = OllamaLLM()
+            print(f"LLM: Ollama local ({llm.model}) — sin costo, sin API key")
+        else:
+            raise SystemExit(
+                "❌ Ni OPENAI_API_KEY ni Ollama disponibles.\n"
+                "   Opcion 1: export OPENAI_API_KEY=sk-... (capa gratuita OpenAI)\n"
+                "   Opcion 2: instala y corre Ollama (ollama serve) con 'ollama pull llama3.2'\n"
+                "   python scripts/demo_academia.py"
+            )
+
     set_embedder(embedder)
-    llm = OpenAILLM()
 
     print("=" * 70)
     print("DEMO END-TO-END — Academia de Danza 'Baila Ya' (Agente Liah)")
@@ -196,8 +225,9 @@ async def main():
     print("\n--- CONVERSACIÓN WHATSAPP (simulada) ---")
     # 1) FAQ
     await _chat(tid, contact_id, "Hola, ¿cuánto cuestan las clases de Salsa y qué horarios tienen?", llm)
-    # 2) Agendamiento (el usuario pide jueves 17:00)
-    target_date = (datetime.now() + timedelta(days=3))
+    # 2) Agendamiento (el usuario pide clase muestra mañana a las 17:00,
+    #    para que el recordatorio proactivo la detecte en el paso 3)
+    target_date = (datetime.now() + timedelta(days=1))
     date_str = target_date.strftime("%Y-%m-%d")
     await _chat(tid, contact_id, f"Me gustaría ir a una clase muestra de prueba el {date_str} a las 17:00.", llm)
     # ejecutamos el agendamiento vía tools (como lo haría el agente tras tool-calling)

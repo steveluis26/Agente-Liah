@@ -95,14 +95,15 @@ async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
 
     if name == "book_appointment":
         cal = calmod.MemoryCalendarAdapter(ctx.session, ctx.tenant_id)
+        cid = args.get("contact_id") or str(ctx.contact_id)
         return await cal.book(
-            args["contact_id"], args["date"], args["time_slot"], args["type"]
+            cid, args["date"], args["time_slot"], args["type"]
         )
 
     if name == "escalate_to_human":
         handoff = Handoff(
             tenant_id=ctx.tenant_id,
-            contact_id=uuid.UUID(args["contact_id"]),
+            contact_id=uuid.UUID(args.get("contact_id") or str(ctx.contact_id)),
             reason=args.get("reason", ""),
             status="open",
         )
