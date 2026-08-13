@@ -3,6 +3,13 @@
 run_agent(): carga system prompt + historial, itera LLM <-> tools hasta
 respuesta final (MAX_ITER). No envía nada; devuelve el texto final para que
 quien llama lo despache (webhook/sender).
+
+Pilares de la arquitectura (no confiar ciegamente en el LLM):
+- Guard RAG: si la consulta es de conocimiento, el engine garantiza el uso de
+  la base de conocimiento (no depende de que el modelo decida llamar la tool).
+- Guard de agendamiento: antes de book_appointment, el engine valida contra la
+  fuente de verdad (calendar). Si no hay cupo, BLOQUEA el book y obliga al
+  modelo a ofrecer alternativas con el dato real.
 """
 import json
 import uuid
@@ -60,8 +67,7 @@ async def run_agent(
     # Heurística de conocimiento: en la primera iteración, si la consulta del
     # usuario parece una pregunta de conocimiento (FAQ), forzamos la tool RAG.
     # Esto garantiza que las FAQs usen la base de conocimiento y evita que un
-    # LLM pequeño "invente" o diga "no sé" sin consultar. No confiamos a ciegas
-    # en que el modelo decidirá usar la herramienta.
+    # LLM pequeño "invente" o diga "no sé" sin consultar.
     _kb_triggers = ("?", "cuanto", "cuánto", "precio", "costo", "coste", "horario",
                     "salsa", "bachata", "ballet", "clase", "estilo", "edad", "reglamento",
                     "direccion", "dirección", "disponible", "informacion", "información")
@@ -81,15 +87,8 @@ async def run_agent(
         # Guard de infraestructura (no confiamos ciegamente en el LLM):
         # si forzamos RAG en la primera iteración y el modelo NO devolvió un
         # tool_call (algunos LLM locales ignoran tool_choice), ejecutamos
-        # search_knowledge_base nosotros y re-inyectamos el resultado para que
-        # el LLM redacte con contexto real. Esto garantiza que las FAQs usen la
-        # base de conocimiento sin depender de la tool-adherence del proveedor.
+        # search_knowledge_base nosotros y re-inyectamos el resultado.
         if i == 0 and force_rag and not resp.is_tool_call:
-            # RAG con threshold relajado: el embedder puede ser FakeEmbedder
-            # (demo local sin OpenAI) donde la similitud coseno es ruidosa.
-            # Con OpenAIEmbedder real el tool search_knowledge_base usa 0.75 y
-            # funciona bien; aquí garantizamos recuperación local sin depender
-            # del proveedor. El LLM recibe el contexto y redacta.
             rag_result = await toolmod.run_tool(
                 "search_knowledge_base", {"query": user_message, "threshold": 0.0}, ctx
             )
@@ -114,30 +113,54 @@ async def run_agent(
         if not resp.is_tool_call:
             return resp.content or ""
 
-        # Ejecuta cada tool_call y feeding results al modelo
-        messages.append(
-            {
-                "role": "assistant",
-                "content": resp.content,
-                "tool_calls": [
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])},
-                    }
-                    for tc in resp.tool_calls
-                ],
-            }
-        )
-        for tc in resp.tool_calls:
-            result = await toolmod.run_tool(tc["name"], tc["arguments"], ctx)
-            messages.append(
+        # Registra los tool_calls del assistant para el feed posterior
+        messages.append({
+            "role": "assistant",
+            "content": resp.content,
+            "tool_calls": [
                 {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps(result, default=str),
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])},
                 }
-            )
+                for tc in resp.tool_calls
+            ],
+        })
+
+        for tc in resp.tool_calls:
+            # Guard de orquestación (no confiamos en el LLM para la verdad del
+            # calendario): antes de agendar, el engine valida contra la fuente
+            # de verdad (MemoryCalendarAdapter). Si el LLM intenta
+            # book_appointment sin cupo (o sin haber chequeado), ejecutamos
+            # check_availability real y, si no hay cupo, BLOQUEAMOS el book e
+            # inyectamos un resultado que obliga al modelo a ofrecer
+            # alternativas con el dato real.
+            if tc["name"] == "book_appointment":
+                args = tc["arguments"]
+                date = args.get("date")
+                slot = args.get("time_slot")
+                pre_check = await toolmod.run_tool(
+                    "check_availability", {"date": date, "time_slot": slot}, ctx
+                )
+                if not pre_check.get("available"):
+                    blocked = {
+                        "ok": False,
+                        "event_id": None,
+                        "start_at": None,
+                        "error": "sin cupo confirmado por la fuente de verdad; "
+                                 "NO se agendó. Ofrece alternativas al cliente.",
+                    }
+                    messages.append({
+                        "role": "tool", "tool_call_id": tc["id"],
+                        "content": json.dumps(blocked, default=str),
+                    })
+                    continue
+
+            result = await toolmod.run_tool(tc["name"], tc["arguments"], ctx)
+            messages.append({
+                "role": "tool", "tool_call_id": tc["id"],
+                "content": json.dumps(result, default=str),
+            })
 
     # Si agotó iteraciones sin texto final, respuesta de resguardo.
     return (
@@ -147,8 +170,6 @@ async def run_agent(
 
 
 def get_embedder():
-    # El embedder real (OpenAI) se inyecta desde quien llama; para el loop
-    # usamos el FakeEmbedder por defecto y se sobreescribe vía set_embedder.
     from app.agent.embedder import FakeEmbedder
 
     return _embedder_holder["embedder"] or FakeEmbedder()

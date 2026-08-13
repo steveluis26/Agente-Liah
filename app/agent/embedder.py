@@ -48,10 +48,11 @@ class FakeEmbedder:
 
     NO semántico como OpenAI, pero dos textos con palabras en común obtienen
     mayor similitud coseno que textos disjuntos -> permite testear el ranking
-    y el pipeline RAG sin consumir API. Dimensión 1536 para compatibilidad.
+    y el pipeline RAG sin consumir API. La dimension se alinea con EMBED_DIM
+    (1536 por defecto / 768 con Ollama local) para coincidir con la tabla.
     """
 
-    dimension = 1536
+    dimension = int(os.getenv("EMBED_DIM", "1536"))
 
     async def embed(self, text: str) -> list[float]:
         return self._vec(text)
