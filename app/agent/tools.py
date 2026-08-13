@@ -85,20 +85,30 @@ TOOLS: list[dict] = [
 async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
     if name == "search_knowledge_base":
         results = await search_knowledge(
-            ctx.session, ctx.tenant_id, args["query"], ctx.embedder
+            ctx.session, ctx.tenant_id, args["query"], ctx.embedder,
+            threshold=args.get("threshold", 0.75),
         )
         return {"results": results}
 
     if name == "check_availability":
+        date = args.get("date")
+        slot = args.get("time_slot")
+        if not date or not slot:
+            return {"available": False, "alternatives": [],
+                    "error": "faltan date/time_slot"}
         cal = calmod.MemoryCalendarAdapter(ctx.session, ctx.tenant_id)
-        return await cal.check_availability(args["date"], args["time_slot"])
+        return await cal.check_availability(date, slot)
 
     if name == "book_appointment":
         cal = calmod.MemoryCalendarAdapter(ctx.session, ctx.tenant_id)
         cid = args.get("contact_id") or str(ctx.contact_id)
-        return await cal.book(
-            cid, args["date"], args["time_slot"], args["type"]
-        )
+        date = args.get("date")
+        slot = args.get("time_slot")
+        atype = args.get("type", "other")
+        if not date or not slot:
+            return {"ok": False, "event_id": None, "start_at": None,
+                    "error": "faltan date/time_slot para agendar"}
+        return await cal.book(cid, date, slot, atype)
 
     if name == "escalate_to_human":
         handoff = Handoff(

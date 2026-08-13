@@ -49,6 +49,15 @@ class OllamaLLM:
             "stream": False,
         }
         if tools:
+            selected = tools
+            if tool_choice and isinstance(tool_choice, dict):
+                forced = tool_choice.get("function", {}).get("name")
+                if forced:
+                    selected = [t for t in tools if t["function"]["name"] == forced]
+                    # Ollama: forzar esa tool especifica
+                    payload["tool_choice"] = {
+                        "type": "function", "function": {"name": forced}
+                    }
             payload["tools"] = [
                 {
                     "type": "function",
@@ -58,7 +67,7 @@ class OllamaLLM:
                         "parameters": t["function"].get("parameters", {}),
                     },
                 }
-                for t in tools
+                for t in selected
             ]
 
         async with httpx.AsyncClient(timeout=120) as client:

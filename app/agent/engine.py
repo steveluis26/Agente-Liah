@@ -57,8 +57,60 @@ async def run_agent(
         if hasattr(llm, attr):
             setattr(llm, attr, val)
 
-    for _ in range(MAX_ITER):
-        resp = await llm.chat(messages, tools=toolmod.TOOLS)
+    # Heurística de conocimiento: en la primera iteración, si la consulta del
+    # usuario parece una pregunta de conocimiento (FAQ), forzamos la tool RAG.
+    # Esto garantiza que las FAQs usen la base de conocimiento y evita que un
+    # LLM pequeño "invente" o diga "no sé" sin consultar. No confiamos a ciegas
+    # en que el modelo decidirá usar la herramienta.
+    _kb_triggers = ("?", "cuanto", "cuánto", "precio", "costo", "coste", "horario",
+                    "salsa", "bachata", "ballet", "clase", "estilo", "edad", "reglamento",
+                    "direccion", "dirección", "disponible", "informacion", "información")
+    force_rag = any(t in user_message.lower() for t in _kb_triggers)
+    first_iter_tool_choice = (
+        {"type": "function", "function": {"name": "search_knowledge_base"}}
+        if force_rag else None
+    )
+
+    for i in range(MAX_ITER):
+        resp = await llm.chat(
+            messages,
+            tools=toolmod.TOOLS,
+            tool_choice=first_iter_tool_choice if i == 0 else None,
+        )
+
+        # Guard de infraestructura (no confiamos ciegamente en el LLM):
+        # si forzamos RAG en la primera iteración y el modelo NO devolvió un
+        # tool_call (algunos LLM locales ignoran tool_choice), ejecutamos
+        # search_knowledge_base nosotros y re-inyectamos el resultado para que
+        # el LLM redacte con contexto real. Esto garantiza que las FAQs usen la
+        # base de conocimiento sin depender de la tool-adherence del proveedor.
+        if i == 0 and force_rag and not resp.is_tool_call:
+            # RAG con threshold relajado: el embedder puede ser FakeEmbedder
+            # (demo local sin OpenAI) donde la similitud coseno es ruidosa.
+            # Con OpenAIEmbedder real el tool search_knowledge_base usa 0.75 y
+            # funciona bien; aquí garantizamos recuperación local sin depender
+            # del proveedor. El LLM recibe el contexto y redacta.
+            rag_result = await toolmod.run_tool(
+                "search_knowledge_base", {"query": user_message, "threshold": 0.0}, ctx
+            )
+            if not rag_result.get("results"):
+                rag_result = {"results": [{"content": "(sin contexto recuperado)",
+                                           "source_id": None, "similarity": 0.0}]}
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "rag_guard", "type": "function",
+                    "function": {"name": "search_knowledge_base",
+                                 "arguments": json.dumps({"query": user_message})},
+                }],
+            })
+            messages.append({
+                "role": "tool", "tool_call_id": "rag_guard",
+                "content": json.dumps(rag_result, default=str),
+            })
+            continue
+
         if not resp.is_tool_call:
             return resp.content or ""
 

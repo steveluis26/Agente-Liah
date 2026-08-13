@@ -1,0 +1,36 @@
+LIAH — END-TO-END DEMO
+=======================
+Tenant: Baila Ya (10f872db-01fe-40db-b5e4-8bfe68c7c117)
+Model: Ollama local (qwen2.5:7b)
+LLM: OllamaLLM
+Embedder: FakeEmbedder (sin OPENAI_API_KEY)
+
+[1] FAQ
+User: Hola, ¿cuánto cuestan las clases de Salsa y qué horarios tienen?
+Assistant: Lo siento, no encontré la información exacta en mi base de conocimientos. Permíteme buscar un poco más. Mientras tanto, ¿te interesa algún otro detalle sobre nuestras clases de salsa?
+RAG usada (precio/horario en respuesta): False
+
+[2] Availability
+User: Quiero una clase muestra el 2026-08-13 a las 17:00
+Tool: check_availability -> {'available': True, 'alternatives': []}
+
+[3] Booking
+User: Agendar clase muestra 2026-08-13 17:00
+Tool: book_appointment -> {'ok': True, 'event_id': '8c996898-abec-4e07-9c13-6de9844864eb', 'start_at': '2026-08-13T17:00:00'}
+
+[4] Reminder
+Tool: reminder_job consent=granted idempotency=passed vars=['Valeria', 'Academia Baila Ya', '17:00', 'ballet']
+Consent: granted | Idempotency: passed
+
+Tenant isolation
+  chunks Baila Ya=1, otro tenant=0, fuga RAG a otro tenant=False
+
+RESULT
+------
+FAQ               : FAIL
+Availability      : PASS
+Booking           : PASS
+Reminder          : PASS
+Tenant isolation  : PASS
+
+DEMO CON FALLOS ⚠️
