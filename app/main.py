@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.knowledge import router as knowledge_router
+from app.api.tenants import router as tenants_router
 from app.channels.whatsapp.webhook import router as whatsapp_router
 from app.reminders.scheduler import start_scheduler
 
@@ -34,6 +35,7 @@ app = FastAPI(title="Agente Liah", version="0.2.0", lifespan=lifespan)
 
 app.include_router(whatsapp_router)
 app.include_router(knowledge_router)
+app.include_router(tenants_router)
 
 
 @app.get("/health", tags=["health"])

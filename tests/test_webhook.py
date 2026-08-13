@@ -15,6 +15,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from app.core.base import Base  # asegura import de modelos
+from app.core.config import get_settings
 from app.core import db as db_mod
 from app.main import app
 
@@ -78,7 +79,7 @@ async def test_get_verify_wrong_token_forbidden():
 
 @pytest.mark.asyncio
 async def test_post_persists_message_with_valid_signature(seeded_tenant):
-    secret = "test_app_secret"
+    secret = get_settings().whatsapp_app_secret
     payload = {
         "object": "whatsapp_business_account",
         "entry": [{"id": "WABA1", "changes": [{"field": "messages", "value": {

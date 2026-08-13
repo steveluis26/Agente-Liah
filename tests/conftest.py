@@ -11,6 +11,9 @@ os.environ.setdefault(
 # La app lee DATABASE_URL vía pydantic-settings; lo forzamos para que el engine
 # de producción apunte a la BD de test.
 os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
+# Credenciales de Meta para el test de Embedded Signup (se usan solo si están seteadas).
+os.environ.setdefault("WHATSAPP_APP_ID", "TEST_APP_ID")
+os.environ.setdefault("WHATSAPP_APP_SECRET", "TEST_APP_SECRET")
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
