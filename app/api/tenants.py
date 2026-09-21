@@ -48,13 +48,14 @@ async def create_tenant(body: TenantCreate, session: AsyncSession = Depends(get_
     if existing is not None:
         raise HTTPException(status_code=409, detail="slug already exists")
 
-    api_key = generate_api_key()
+    api_key, salt = generate_api_key()
     tenant = Tenant(
         slug=body.slug,
         name=body.name,
         business_type=body.business_type,
         timezone=body.timezone,
-        api_key_hash=hash_api_key(api_key),
+        api_key_hash=hash_api_key(api_key, salt),
+        api_key_salt=salt,
     )
     session.add(tenant)
     await session.flush()
@@ -105,7 +106,9 @@ async def embedded_signup_callback(
     phone_number = None
 
     if app_id and app_secret:
-        async with httpx.AsyncClient(timeout=30) as client:
+        # trust_env=False: los proxies inyectados por el entorno no deben
+        # interferir con llamadas servidor-a-servidor.
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             # Paso B: code -> access token (System User de larga duración)
             r = await client.get(
                 f"{GRAPH_BASE}/oauth/access_token",
@@ -157,6 +160,32 @@ async def embedded_signup_callback(
 # ---------------------------------------------------------------------------
 # Endpoints protegidos (X-Tenant-API-Key)
 # ---------------------------------------------------------------------------
+class ApiKeyRotated(BaseModel):
+    api_key: str  # nueva clave, se muestra una sola vez
+
+
+@router.post("/me/api-key/rotate", response_model=ApiKeyRotated)
+async def rotate_api_key(
+    tenant_id: uuid.UUID = Depends(get_current_tenant_by_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Rota la API key del tenant: la anterior deja de funcionar de inmediato.
+
+    Las claves rotadas migran al esquema salt+pepper (Fase 1) aunque la
+    original fuera legacy.
+    """
+    tenant = (
+        await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    new_key, salt = generate_api_key()
+    tenant.api_key_hash = hash_api_key(new_key, salt)
+    tenant.api_key_salt = salt
+    await session.commit()
+    return ApiKeyRotated(api_key=new_key)
+
+
 class ConfigUpdate(BaseModel):
     system_prompt: str | None = None
     tone: str | None = None

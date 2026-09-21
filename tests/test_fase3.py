@@ -55,11 +55,58 @@ async def test_create_tenant_returns_api_key_once():
     assert r.status_code == 201
     body = r.json()
     assert body["api_key"].startswith("liah_live_sk_")
-    # el hash se guardó, no la key en claro
+    # el hash con salt+pepper se guardó, no la key en claro
     async with db_mod.async_session_maker() as s:
         t = (await s.execute(select(Tenant).where(Tenant.slug == "barberia-x"))).scalar_one()
-        assert t.api_key_hash == hash_api_key(body["api_key"])
+        assert t.api_key_salt is not None
+        assert t.api_key_hash == hash_api_key(body["api_key"], t.api_key_salt)
         assert t.api_key_hash != body["api_key"]
+
+
+@pytest.mark.asyncio
+async def test_rotate_api_key():
+    """Rotación: la nueva key funciona, la anterior muere de inmediato."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        created = await c.post(
+            "/tenants",
+            json={"slug": "rotacion-x", "name": "Rot X", "business_type": "otro"},
+        )
+        assert created.status_code == 201
+        old_key = created.json()["api_key"]
+
+        r = await c.post("/tenants/me/api-key/rotate",
+                         headers={"X-Tenant-API-Key": old_key})
+        assert r.status_code == 200
+        new_key = r.json()["api_key"]
+        assert new_key != old_key
+        assert new_key.startswith("liah_live_sk_")
+
+        # la vieja ya no autentica
+        r_old = await c.get("/tenants/me/config",
+                            headers={"X-Tenant-API-Key": old_key})
+        assert r_old.status_code == 401
+        # la nueva sí
+        r_new = await c.get("/tenants/me/config",
+                            headers={"X-Tenant-API-Key": new_key})
+        assert r_new.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_duplicate_slug_rejected():
+    """Dos tenants no pueden compartir slug."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        r1 = await c.post(
+            "/tenants",
+            json={"slug": "slug-dup", "name": "Uno", "business_type": "otro"},
+        )
+        assert r1.status_code == 201
+        r2 = await c.post(
+            "/tenants",
+            json={"slug": "slug-dup", "name": "Dos", "business_type": "otro"},
+        )
+        assert r2.status_code == 409
 
 
 @pytest.mark.asyncio

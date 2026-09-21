@@ -37,7 +37,7 @@ class OpenAILLM:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice or "auto"
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
             r = await client.post(
                 f"{self.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -61,9 +61,15 @@ class OpenAILLM:
                 )
 
         finish = "tool_calls" if tool_calls else "stop"
+        usage = data.get("usage") or {}
         return LLMResponse(
             content=data.get("content"),
             finish_reason=finish,
             tool_calls=tool_calls,
             raw=data,
+            usage={
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            },
         )

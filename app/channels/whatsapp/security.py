@@ -4,15 +4,21 @@ import hmac
 
 from app.core.config import get_settings
 
-settings = get_settings()
-
 
 def verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
     """Devuelve True si el payload fue firmado por Meta con app_secret.
 
     La cabecera llega como: 'sha256=hexdigest'.
+
+    Desactivar la verificación (WHATSAPP_VERIFY_SIGNATURE=false) solo está
+    permitido fuera de producción; en producción lanza RuntimeError.
     """
+    settings = get_settings()
     if not settings.whatsapp_verify_signature:
+        if settings.app_env == "production":
+            raise RuntimeError(
+                "WHATSAPP_VERIFY_SIGNATURE no puede desactivarse en producción"
+            )
         return True  # sandbox/dev: omitir
     if not signature_header:
         return False

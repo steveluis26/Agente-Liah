@@ -29,3 +29,23 @@ def get_tenant_id() -> uuid.UUID:
 
 def clear_tenant_id() -> None:
     _tenant_id_ctx.set(None)
+
+
+def require_tenant() -> uuid.UUID:
+    """Atajo explícito: exige que el contexto de tenant esté configurado.
+
+    Úsalo al inicio de cualquier ruta de acceso a datos que reciba el
+    tenant_id por otro canal (payload, job encolado), para que el aislamiento
+    no dependa de que alguien "se acuerde" de llamar a get_tenant_id().
+    """
+    return get_tenant_id()
+
+
+# ── RLS (decisión Fase 1) ─────────────────────────────────────────────
+# Se evaluó Row-Level Security de Postgres como defensa en profundidad.
+# DECISIÓN: se difiere. Motivos: (1) RLS exige cambiar de rol por conexión
+# (SET ROLE / SET app.tenant_id) en cada checkout del pool, lo que complica
+# el pooling y el debugging; (2) el aislamiento hoy es lógico y se refuerza
+# con TenantMixin + require_tenant() + tests de aislamiento por tenant en
+# cada fase. RLS se reconsidera antes de vender a terceros (ver
+# docs/DECISIONES_FASE1.md).

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, Text, Uuid, text
+from sqlalchemy import ForeignKey, Index, String, Text, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, TenantMixin
@@ -9,6 +9,12 @@ from app.core.base import Base, TenantMixin
 
 class Appointment(Base, TenantMixin):
     __tablename__ = "appointments"
+    # Refuerzo en BD del guard anti-doble-agenda: un tenant no puede tener dos
+    # citas que empiecen en el mismo instante. El engine/calendario validan
+    # antes, pero la última palabra la tiene este índice (carreras incluidas).
+    __table_args__ = (
+        Index("uq_appointments_tenant_start", "tenant_id", "start_at", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text("uuid_generate_v4()")

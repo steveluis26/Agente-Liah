@@ -25,11 +25,21 @@ class WhatsappMetadata(BaseModel):
     phone_number_id: str
 
 
+class WhatsappStatus(BaseModel):
+    """Status de Meta (delivered/read/failed): solo auditoría, nunca genera
+    trabajo ni respuesta. Modelado explícito para no depender de extras."""
+    id: str | None = None
+    status: str | None = None
+    timestamp: str | None = None
+    recipient_id: str | None = None
+
+
 class WhatsappValue(BaseModel):
     messaging_product: Literal["whatsapp"]
     metadata: WhatsappMetadata
     contacts: list[Any] = Field(default_factory=list)
     messages: list[WhatsappMessage] = Field(default_factory=list)
+    statuses: list[WhatsappStatus] = Field(default_factory=list)
 
 
 class WhatsappChange(BaseModel):

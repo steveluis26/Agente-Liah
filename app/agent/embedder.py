@@ -23,7 +23,7 @@ class OpenAIEmbedder:
             raise RuntimeError("OPENAI_API_KEY requerido para OpenAIEmbedder")
 
     async def embed(self, text: str) -> list[float]:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             r = await client.post(
                 f"{self.base_url}/embeddings",
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -33,7 +33,7 @@ class OpenAIEmbedder:
             return r.json()["data"][0]["embedding"]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
             r = await client.post(
                 f"{self.base_url}/embeddings",
                 headers={"Authorization": f"Bearer {self.api_key}"},

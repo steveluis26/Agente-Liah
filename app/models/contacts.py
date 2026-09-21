@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Text, Uuid, text
+from sqlalchemy import String, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, TenantMixin
@@ -9,6 +9,11 @@ from app.core.base import Base, TenantMixin
 
 class Contact(Base, TenantMixin):
     __tablename__ = "contacts"
+    # Un wa_id identifica un contacto dentro de un tenant; el constraint evita
+    # duplicados por condiciones de carrera en el webhook.
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "wa_id", name="uq_contacts_tenant_wa"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text("uuid_generate_v4()")

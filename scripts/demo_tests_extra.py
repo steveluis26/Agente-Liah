@@ -14,7 +14,16 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, func
 
 from app.agent.embedder import FakeEmbedder, OpenAIEmbedder
-from app.agent.engine import run_agent, set_embedder
+from app.agent.engine import run_agent
+
+
+def _require_demo_reset():
+    """Guardián: este script hace drop_all(); exige confirmación explícita."""
+    if os.environ.get("LIAH_DEMO_RESET") != "1":
+        raise SystemExit(
+            "Este script borra la BD (drop_all). Para continuar exporta "
+            "LIAH_DEMO_RESET=1 explícitamente."
+        )
 from app.agent.rag import ingest_knowledge
 from app.core import db as db_mod
 from app.core.base import Base
@@ -47,6 +56,7 @@ def build_llm():
 
 
 async def setup():
+    _require_demo_reset()
     async with db_mod.engine.begin() as c:
         await c.run_sync(Base.metadata.drop_all)
         await c.run_sync(Base.metadata.create_all)
@@ -58,7 +68,6 @@ async def setup():
             embedder = OllamaEmbedder()
         except Exception:
             embedder = FakeEmbedder()
-    set_embedder(embedder)
     llm = build_llm()
     async with db_mod.async_session_maker() as s:
         t = Tenant(slug=SLUG, name="Baila Ya", business_type="academy")
@@ -70,22 +79,22 @@ async def setup():
         s.add(c); await s.commit()
         await s.refresh(c)
         await ingest_knowledge(s, t.id, "KB", KB, embedder)
-        return llm, t.id, c.id
+        return llm, t.id, c.id, embedder
 
 
-async def _chat(llm, tid, cid, msg):
+async def _chat(llm, tid, cid, msg, embedder):
     async with db_mod.async_session_maker() as s:
-        return await run_agent(s, llm, tid, cid, msg) or ""
+        return await run_agent(s, llm, tid, cid, msg, embedder=embedder) or ""
 
 
-async def test_conflict(llm, tid, cid):
+async def test_conflict(llm, tid, cid, embedder):
     target = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     async with db_mod.async_session_maker() as s:
         s.add(Appointment(tenant_id=tid, contact_id=cid, type="trial_class",
                           start_at=datetime.fromisoformat(f"{target}T17:00:00"),
                           status="confirmed"))
         await s.commit()
-    reply = await _chat(llm, tid, cid, f"Quiero reservar mañana a las 17:00")
+    reply = await _chat(llm, tid, cid, f"Quiero reservar mañana a las 17:00", embedder)
     async with db_mod.async_session_maker() as s:
         n = (await s.execute(
             select(func.count()).select_from(Appointment).where(
@@ -106,16 +115,16 @@ async def test_conflict(llm, tid, cid):
     }
 
 
-async def test_hallucination(llm, tid, cid):
-    reply = await _chat(llm, tid, cid, "¿Cuánto cuesta una clase de piano?")
+async def test_hallucination(llm, tid, cid, embedder):
+    reply = await _chat(llm, tid, cid, "¿Cuánto cuesta una clase de piano?", embedder)
     invento = ("piano" in reply.lower()) and any(
         p in reply for p in ["$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8", "$9"])
     usó_rag_o_negó = ("no" in reply.lower()) or ("sabemos" in reply.lower()) or ("dispon" in reply.lower())
     return (not invento) and usó_rag_o_negó, {"invento": invento, "reply_snip": reply.strip()[:200]}
 
 
-async def test_handoff(llm, tid, cid):
-    reply = await _chat(llm, tid, cid, "Quiero hablar con un humano, tuve un problema con mi pago")
+async def test_handoff(llm, tid, cid, embedder):
+    reply = await _chat(llm, tid, cid, "Quiero hablar con un humano, tuve un problema con mi pago", embedder)
     async with db_mod.async_session_maker() as s:
         n = (await s.execute(
             select(func.count()).select_from(Handoff).where(Handoff.tenant_id == tid))
@@ -125,24 +134,24 @@ async def test_handoff(llm, tid, cid):
 
 
 async def main():
-    llm, tid, cid = await setup()
+    llm, tid, cid, embedder = await setup()
     out = []
     A = out.append
     A("LIAH — ARCHITECTURE TESTS (gratis, provider-agnostic)")
     A(f"LLM: {type(llm).__name__}  Model: {getattr(llm,'model','(openai)')}")
     A("")
 
-    ok_c, det_c = await test_conflict(llm, tid, cid)
+    ok_c, det_c = await test_conflict(llm, tid, cid, embedder)
     A(f"[conflict] cita existente 17:00 -> NO book + ofrece alt: {'PASS' if ok_c else 'FAIL'}")
     A(f"    {det_c}")
     A("")
 
-    ok_h, det_h = await test_hallucination(llm, tid, cid)
+    ok_h, det_h = await test_hallucination(llm, tid, cid, embedder)
     A(f"[hallucination] fuera de KB -> no inventa: {'PASS' if ok_h else 'FAIL'}")
     A(f"    {det_h}")
     A("")
 
-    ok_o, det_o = await test_handoff(llm, tid, cid)
+    ok_o, det_o = await test_handoff(llm, tid, cid, embedder)
     A(f"[handoff] duda sensible -> abre handoff: {'PASS' if ok_o else 'FAIL'}")
     A(f"    {det_o}")
     A("")

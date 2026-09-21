@@ -7,7 +7,7 @@ Responsabilidades:
 - Arma las variables del template desde la BD (fuente de verdad).
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,6 +70,10 @@ async def dispatch_reminder(
     """
     if not await _consent_ok(session, contact):
         return False
+    # Columnas naive en el esquema: normalizar scheduled_for a UTC naive una
+    # sola vez a la entrada para no mezclar aware/naive en queries ni logs.
+    if scheduled_for.tzinfo is not None:
+        scheduled_for = scheduled_for.astimezone(timezone.utc).replace(tzinfo=None)
     if await _already_sent(session, tenant_id, rule.id, contact.id, scheduled_for):
         return False
 
@@ -87,18 +91,27 @@ async def dispatch_reminder(
     await session.commit()
     await session.refresh(log)
 
-    meta_id = await send_template(
-        session,
-        str(tenant_id),
-        str(contact.id),
-        contact.wa_id,
-        template.name,
-        template.language,
-        components,
-        dry_run=dry_run,
-    )
+    # Un fallo de envío (red, token, Meta) NO debe matar el cron: se marca
+    # failed y el scheduler sigue con el siguiente recordatorio.
+    try:
+        meta_id = await send_template(
+            session,
+            str(tenant_id),
+            str(contact.id),
+            contact.wa_id,
+            template.name,
+            template.language,
+            components,
+            dry_run=dry_run,
+        )
+    except Exception as e:
+        log.status = "failed"
+        # Columna naive: se guarda UTC sin tzinfo (convención del esquema).
+        log.sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await session.commit()
+        return False
     log.status = "sent" if meta_id is not None or dry_run else "failed"
-    log.sent_at = datetime.utcnow()
+    log.sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
     log.meta_message_id = meta_id
     await session.commit()
     return True

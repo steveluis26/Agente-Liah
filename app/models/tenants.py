@@ -17,6 +17,9 @@ class Tenant(Base):
     timezone: Mapped[str] = mapped_column(String(40), nullable=False, default="America/Mexico_City")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     api_key_hash: Mapped[str | None] = mapped_column(String(64))  # SHA-256 hex
+    # Sal aleatoria por clave (hex). Las claves creadas antes de la Fase 1
+    # tienen salt NULL y se verifican con el esquema legacy (sin salt).
+    api_key_salt: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[str] = mapped_column(
         server_default=text("now()"), nullable=False
     )

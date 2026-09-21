@@ -15,7 +15,16 @@ from sqlalchemy import select, func
 
 from app.agent.calendar import MemoryCalendarAdapter
 from app.agent.embedder import FakeEmbedder, OpenAIEmbedder
-from app.agent.engine import run_agent, set_embedder
+from app.agent.engine import run_agent
+
+
+def _require_demo_reset():
+    """Guardián: este script hace drop_all(); exige confirmación explícita."""
+    if os.environ.get("LIAH_DEMO_RESET") != "1":
+        raise SystemExit(
+            "Este script borra la BD (drop_all). Para continuar exporta "
+            "LIAH_DEMO_RESET=1 explícitamente."
+        )
 from app.agent.rag import ingest_knowledge
 from app.core import db as db_mod
 from app.core.base import Base
@@ -74,9 +83,9 @@ async def main():
     except RuntimeError:
         embedder = FakeEmbedder()
         print("Usando FakeEmbedder (sin OPENAI_API_KEY)")
-    set_embedder(embedder)
     llm = StubLLM()
 
+    _require_demo_reset()
     async with db_mod.engine.begin() as c:
         await c.run_sync(Base.metadata.drop_all)
         await c.run_sync(Base.metadata.create_all)
@@ -103,7 +112,8 @@ async def main():
 
     # 1) FAQ via agente (RAG)
     async with db_mod.async_session_maker() as s:
-        r1 = await run_agent(s, llm, tid, cid, "¿Cuánto cuestan las clases de salsa y horarios?")
+        r1 = await run_agent(s, llm, tid, cid, "¿Cuánto cuestan las clases de salsa y horarios?",
+                             embedder=embedder)
     print("LIAH FAQ:", r1)
 
     # 2) Agendamiento via tools

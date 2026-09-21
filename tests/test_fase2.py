@@ -49,13 +49,14 @@ async def _schema():
         await conn.run_sync(Base.metadata.drop_all)
 
 
-async def _make_tenant(slug="academia"):
+async def _make_tenant(slug="academia", phone_number_id=None):
     async with db_mod.async_session_maker() as s:
         t = Tenant(slug=slug, name="Academia Demo", business_type="academy")
         s.add(t)
         await s.flush()
         s.add(TenantConfig(tenant_id=t.id, system_prompt="x"))
-        s.add(WhatsappChannel(tenant_id=t.id, phone_number_id="123456789",
+        s.add(WhatsappChannel(tenant_id=t.id,
+                              phone_number_id=phone_number_id or f"pn-{slug}",
                               verify_token="tok", token_secret_ref="TEST"))
         await s.commit()
         return t.id
@@ -218,3 +219,87 @@ async def test_send_template_dry_run_returns_none():
         assert meta is None
         msgs = (await s.execute(select(func.count()).select_from(Message))).scalar()
         assert msgs >= 1
+
+
+# ── Tests nuevos Fase 1 ──────────────────────────────
+@pytest.mark.asyncio
+async def test_dispatch_tenant_isolation():
+    """Un dispatch del tenant A no deja rastro en el tenant B."""
+    tid_a = await _make_tenant("tenant-a")
+    tid_b = await _make_tenant("tenant-b")
+    async with db_mod.async_session_maker() as s:
+        contact = Contact(tenant_id=tid_a, wa_id="521555009001",
+                         name="Ana", consent_status="granted")
+        s.add(contact)
+        await s.commit()
+        await s.refresh(contact)
+        tpl = await _make_template(s, tid_a, "recordatorio_x")
+        rule = AutomationRule(tenant_id=tid_a, type="trial_class", enabled=True)
+        s.add(rule)
+        await s.commit()
+        await s.refresh(rule)
+
+        ok = await dispatch.dispatch_reminder(
+            s, tid_a, "Tenant A", rule, contact, tpl,
+            datetime.now(timezone.utc), ["Ana", "Tenant A"], dry_run=True,
+        )
+        assert ok is True
+        n_b_logs = (await s.execute(
+            select(func.count()).select_from(ReminderLog).where(
+                ReminderLog.tenant_id == tid_b))).scalar()
+        n_b_msgs = (await s.execute(
+            select(func.count()).select_from(Message).where(
+                Message.tenant_id == tid_b))).scalar()
+    assert n_b_logs == 0 and n_b_msgs == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_revoked_consent_blocked():
+    """Consentimiento revocado: el recordatorio se bloquea (LFPDPPP)."""
+    tid = await _make_tenant()
+    async with db_mod.async_session_maker() as s:
+        contact = Contact(tenant_id=tid, wa_id="521555009002",
+                         name="Luis", consent_status="revoked")
+        s.add(contact)
+        await s.commit()
+        await s.refresh(contact)
+        tpl = await _make_template(s, tid, "recordatorio_y")
+        rule = AutomationRule(tenant_id=tid, type="trial_class", enabled=True)
+        s.add(rule)
+        await s.commit()
+        await s.refresh(rule)
+
+        ok = await dispatch.dispatch_reminder(
+            s, tid, "Academia Demo", rule, contact, tpl,
+            datetime.now(timezone.utc), ["Luis", "Academia Demo"], dry_run=True,
+        )
+        assert ok is False
+        n = (await s.execute(select(func.count()).select_from(ReminderLog))).scalar()
+        assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_send_failure_marks_failed_without_killing_cron():
+    """Fallo de envío (sin token configurado) -> status=failed, sin excepción."""
+    tid = await _make_tenant()  # token_secret_ref="TEST", sin WA_TOKEN_TEST en env
+    async with db_mod.async_session_maker() as s:
+        contact = Contact(tenant_id=tid, wa_id="521555009003",
+                         name="Marta", consent_status="granted")
+        s.add(contact)
+        await s.commit()
+        await s.refresh(contact)
+        tpl = await _make_template(s, tid, "recordatorio_z")
+        rule = AutomationRule(tenant_id=tid, type="trial_class", enabled=True)
+        s.add(rule)
+        await s.commit()
+        await s.refresh(rule)
+
+        # dry_run=False fuerza el path real de envío, que falla por falta de
+        # secreto; dispatch debe capturarlo y marcar failed (el cron sigue).
+        ok = await dispatch.dispatch_reminder(
+            s, tid, "Academia Demo", rule, contact, tpl,
+            datetime.now(timezone.utc), ["Marta", "Academia Demo"], dry_run=False,
+        )
+        assert ok is False
+        log = (await s.execute(select(ReminderLog))).scalar_one()
+        assert log.status == "failed"

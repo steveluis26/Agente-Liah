@@ -21,7 +21,7 @@ from sqlalchemy import select, func
 
 from app.agent.calendar import MemoryCalendarAdapter
 from app.agent.embedder import FakeEmbedder, OpenAIEmbedder
-from app.agent.engine import run_agent, set_embedder
+from app.agent.engine import run_agent
 from app.agent.rag import ingest_knowledge, search_knowledge
 from app.core import db as db_mod
 from app.core.base import Base
@@ -56,6 +56,15 @@ SYSTEM_PROMPT = (
 )
 
 
+def _require_demo_reset():
+    """Guardián: este script hace drop_all(); exige confirmación explícita."""
+    if os.environ.get("LIAH_DEMO_RESET") != "1":
+        raise SystemExit(
+            "Este script borra la BD (drop_all). Para continuar exporta "
+            "LIAH_DEMO_RESET=1 explícitamente."
+        )
+
+
 def build_llm():
     """Devuelve (llm, label) segun LIAH_LLM. Provider-agnostic."""
     spec = os.getenv("LIAH_LLM", "ollama").strip()
@@ -73,6 +82,7 @@ def build_llm():
 
 
 async def _reset():
+    _require_demo_reset()
     async with db_mod.engine.begin() as c:
         await c.run_sync(Base.metadata.drop_all)
         await c.run_sync(Base.metadata.create_all)
@@ -100,9 +110,10 @@ async def _setup_tenant(embedder):
     return tid
 
 
-async def _chat(llm, tid, contact_id, user_msg):
+async def _chat(llm, tid, contact_id, user_msg, embedder):
     async with db_mod.async_session_maker() as s:
-        reply = await run_agent(s, llm, tid, contact_id, user_msg)
+        reply = await run_agent(s, llm, tid, contact_id, user_msg,
+                                embedder=embedder)
     return reply or ""
 
 
@@ -165,8 +176,6 @@ async def main():
         except Exception:
             embedder = FakeEmbedder()
             emb_label = "FakeEmbedder (sin OPENAI_API_KEY ni Ollama)"
-    set_embedder(embedder)
-
     llm, llm_label = build_llm()
 
     await _reset()
@@ -189,7 +198,7 @@ async def main():
     L("[1] FAQ")
     faq_q = "Hola, ¿cuánto cuestan las clases de Salsa y qué horarios tienen?"
     L(f"User: {faq_q}")
-    faq_reply = await _chat(llm, tid, contact_id, faq_q)
+    faq_reply = await _chat(llm, tid, contact_id, faq_q, embedder)
     # Evidencia de RAG: el sistema recupera el chunk relevante (fuente de verdad).
     # La calidad de redaccion depende del LLM; la arquitectura usa RAG si hay contexto.
     async with db_mod.async_session_maker() as s:
