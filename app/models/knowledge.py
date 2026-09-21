@@ -1,15 +1,16 @@
-import os
 import uuid
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Integer, String, Text, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.agent.embedder import EMBED_DIM
 from app.core.base import Base, TenantMixin
 
-# La dimension del vector debe coincidir con el embedder en uso. Produccion usa
-# OpenAI (1536). El demo local puede usar Ollama/nomic-embed-text (768) vía env.
-EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
+# La dimensión vive en app/agent/embedder.py (EMBED_DIM, única fuente de
+# verdad) y se valida contra esta columna al arranque (validate_embed_dim).
+# Producción: OpenAI (1536). Demo local: Ollama/nomic-embed-text (768) vía
+# env EMBED_DIM=768 ANTES de crear el esquema.
 
 
 class KnowledgeSource(Base, TenantMixin):

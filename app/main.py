@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     sched = None
+    await _validate_embed_dim()
     if _scheduler_enabled():
         sched = start_scheduler()
     try:
@@ -23,6 +24,32 @@ async def lifespan(app: FastAPI):
     finally:
         if sched is not None:
             sched.shutdown(wait=False)
+
+
+async def _validate_embed_dim() -> None:
+    """Falla rápido si la columna pgvector no coincide con EMBED_DIM (Fase 2).
+
+    Un mismatch 1536 vs 768 rompe el RAG en silencio; mejor no arrancar.
+    Si la BD no está disponible, se loguea advertencia (el resto de la app
+    ya fallará por su cuenta al primer acceso).
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.agent.embedder import validate_embed_dim
+    from app.core.db import async_session_maker
+
+    try:
+        async with async_session_maker() as session:
+            dim = await validate_embed_dim(session)
+        logging.getLogger("liah.startup").info(
+            "EMBED_DIM validado contra pgvector: %s", dim
+        )
+    except RuntimeError:
+        raise  # mismatch real: no arrancar
+    except SQLAlchemyError as e:
+        logging.getLogger("liah.startup").warning(
+            "No se pudo validar EMBED_DIM (BD no disponible: %s)", e
+        )
 
 
 def _scheduler_enabled() -> bool:

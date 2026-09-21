@@ -10,6 +10,7 @@ from app.models.platform_users import PlatformUser
 from app.models.tenant_configs import TenantConfig
 from app.models.tenants import Tenant
 from app.models.templates import Template
+from app.models.usage_records import UsageMonthly, UsageRecord
 from app.models.webhook_jobs import WebhookJob
 from app.models.whatsapp_channels import WhatsappChannel
 
@@ -31,4 +32,6 @@ __all__ = [
     "EventLog",
     "ActionLog",
     "WebhookJob",
+    "UsageRecord",
+    "UsageMonthly",
 ]

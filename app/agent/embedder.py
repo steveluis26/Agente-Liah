@@ -1,13 +1,61 @@
 """Embedder: OpenAI (text-embedding-3-small, dim 1536) + Fake determinístico.
 
-El FakeEmbedder se usa en tests/smoke sin consumir API ni red.
+ÚNICA FUENTE DE VERDAD DE LA DIMENSIÓN: `EMBED_DIM` (este módulo).
+`app/models/knowledge.py` la importa para construir la columna pgvector, y
+`validate_embed_dim()` la coteja contra la columna real en BD al arranque:
+si alguien creó la tabla con otra dimensión (1536 vs 768), falla rápido con
+mensaje claro en vez de romper el RAG en silencio.
 """
 import hashlib
 import os
+import re
 
 import httpx
 
 from app.agent.ports import EmbedderPort
+
+# Dimensión canónica del esqueleto. Producción comercial: 1536 (OpenAI
+# text-embedding-3-small). Instalación local con Ollama/nomic-embed-text:
+# 768 (exportar EMBED_DIM=768 ANTES de crear el esquema).
+EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
+
+
+async def validate_embed_dim(session) -> int:
+    """Valida que `knowledge_chunks.embedding` tenga dimensión EMBED_DIM.
+
+    Llamar al arranque de la app (ver app/main.py). Lanza RuntimeError con
+    mensaje accionable si hay mismatch (p.ej. tabla creada con 768 y
+    EMBED_DIM=1536, o viceversa). Devuelve la dimensión real de la columna.
+    """
+    from sqlalchemy import text
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT format_type(a.atttypid, a.atttypmod) "
+                "FROM pg_attribute a JOIN pg_class c "
+                "ON a.attrelid = c.oid "
+                "WHERE c.relname = 'knowledge_chunks' "
+                "AND a.attname = 'embedding' AND NOT a.attisdropped"
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise RuntimeError(
+            "validate_embed_dim: no se encontró la columna "
+            "knowledge_chunks.embedding (¿esquema sin crear?)."
+        )
+    m = re.search(r"vector\((\d+)\)", row)
+    actual = int(m.group(1)) if m else None
+    if actual != EMBED_DIM:
+        raise RuntimeError(
+            f"MISMATCH de dimensión de embeddings: EMBED_DIM={EMBED_DIM} pero "
+            f"la columna knowledge_chunks.embedding es {row}. "
+            "Ajusta EMBED_DIM al embedder real ANTES de crear el esquema "
+            "(OpenAI text-embedding-3-small=1536, Ollama nomic-embed-text=768) "
+            "o migra la columna."
+        )
+    return actual
 
 
 class OpenAIEmbedder:
@@ -17,10 +65,18 @@ class OpenAIEmbedder:
     model = "text-embedding-3-small"
 
     def __init__(self, api_key: str | None = None, base_url: str = "https://api.openai.com/v1"):
+        # La key puede venir resuelta por tenant (SecretProvider) o del env
+        # global. Si EMBED_DIM != 1536, el arranque falla claro (validate_embed_dim).
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY requerido para OpenAIEmbedder")
+        if EMBED_DIM != 1536:
+            raise RuntimeError(
+                f"OpenAIEmbedder produce vectores de 1536 pero EMBED_DIM={EMBED_DIM} "
+                "(la columna pgvector no coincide). Usa el embedder que corresponda "
+                "a tu EMBED_DIM."
+            )
 
     async def embed(self, text: str) -> list[float]:
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
@@ -48,11 +104,11 @@ class FakeEmbedder:
 
     NO semántico como OpenAI, pero dos textos con palabras en común obtienen
     mayor similitud coseno que textos disjuntos -> permite testear el ranking
-    y el pipeline RAG sin consumir API. La dimension se alinea con EMBED_DIM
-    (1536 por defecto / 768 con Ollama local) para coincidir con la tabla.
+    y el pipeline RAG sin consumir API. La dimensión es EMBED_DIM (la única
+    fuente de verdad), así coincide siempre con la columna pgvector.
     """
 
-    dimension = int(os.getenv("EMBED_DIM", "1536"))
+    dimension = EMBED_DIM
 
     async def embed(self, text: str) -> list[float]:
         return self._vec(text)

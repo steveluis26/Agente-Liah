@@ -22,17 +22,35 @@ Pilares de la arquitectura (no confiar ciegamente en el LLM):
   sensible CREA un Handoff (no solo lo sugiere en texto).
 """
 import json
+import logging
+import os
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import tools as toolmod
+from app.agent.costing import record_turn_usage
+from app.agent.ollama_llm import OllamaLLM
 from app.agent.ports import EmbedderPort, LLMPort
+from app.agent.secrets import (
+    EnvSecretProvider,
+    SecretProvider,
+    require_tenant_openai_key,
+)
 from app.core.audit import log_event
 from app.models import Handoff, Message, Tenant, TenantConfig
 
+logger = logging.getLogger("liah.engine")
+
 MAX_ITER = 5
+
+# Defaults comerciales del esqueleto (Fase 2): el cliente comercial usa
+# OpenAI; Ollama queda como opción local/dev por tenant.
+DEFAULT_LLM_PROVIDER = os.getenv("LIAH_DEFAULT_LLM_PROVIDER", "openai")
+DEFAULT_LLM_MODEL = os.getenv("LIAH_DEFAULT_LLM_MODEL", "gpt-4o-mini")
+DEFAULT_LLM_TEMPERATURE = float(os.getenv("LIAH_DEFAULT_LLM_TEMPERATURE", "0.2"))
+DEFAULT_EMBEDDER = os.getenv("LIAH_DEFAULT_EMBEDDER", "fake")
 
 # Disparadores RAG genéricos (sin vertical): preguntas y temas transversales
 # de negocio (precios, horarios, ubicación, servicios). Cada tenant puede
@@ -48,6 +66,128 @@ HANDOFF_NOTICE = (
     "Voy a pasarte con una persona del equipo para atenderte mejor. "
     "En un momento te contactan por este mismo medio."
 )
+
+
+# ── Factory de LLM / embedder por tenant (Fase 2) ──────────────
+#
+# La config vive en `tenant_configs.model_routing` (JSONB), p.ej.:
+#   {"llm_provider": "openai", "llm_model": "gpt-4o-mini",
+#    "llm_max_tokens": 800, "llm_temperature": 0.2,
+#    "embedder": "openai", "tier": "comercial"}
+# Defaults: proveedor OpenAI (comercial), modelo gpt-4o-mini, embedder fake
+# (cero costo; el tenant comercial lo pone en "openai" en el onboarding).
+# La API key se resuelve POR TENANT vía SecretProvider, nunca del env global
+# directo (salvo fallback documentado en secrets.py).
+
+
+async def _tenant_routing(
+    session: AsyncSession, tenant_id: uuid.UUID
+) -> tuple[dict, str]:
+    cfg = (
+        await session.execute(
+            select(TenantConfig).where(TenantConfig.tenant_id == tenant_id)
+        )
+    ).scalar_one_or_none()
+    routing = dict(cfg.model_routing or {}) if cfg else {}
+    tenant = await session.get(Tenant, tenant_id)
+    slug = tenant.slug if tenant else str(tenant_id)
+    return routing, slug
+
+
+async def build_llm_for_tenant(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    secrets: SecretProvider | None = None,
+) -> LLMPort:
+    """Construye el LLM del tenant según su `model_routing`.
+
+    - `llm_provider: "openai"` (default comercial) -> OpenAILLM con la key del
+      tenant resuelta por `secrets`. Sin key: RuntimeError claro (fail fast).
+    - `llm_provider: "ollama"` -> OllamaLLM local (dev; costo 0).
+    """
+    from app.agent.llm import OpenAILLM  # import tardío: evita ciclo
+
+    secrets = secrets or EnvSecretProvider()
+    routing, slug = await _tenant_routing(session, tenant_id)
+    provider = str(routing.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower()
+
+    if provider == "ollama":
+        return OllamaLLM(
+            model=routing.get("ollama_model") or None,
+            base_url=routing.get("ollama_base_url") or None,
+        )
+
+    if provider != "openai":
+        raise RuntimeError(
+            f"llm_provider desconocido para el tenant '{slug}': '{provider}' "
+            "(válidos: 'openai', 'ollama')"
+        )
+    api_key = require_tenant_openai_key(secrets, slug)
+    max_tokens = routing.get("llm_max_tokens")
+    temperature = routing.get("llm_temperature", DEFAULT_LLM_TEMPERATURE)
+    return OpenAILLM(
+        api_key=api_key,
+        model=routing.get("llm_model") or DEFAULT_LLM_MODEL,
+        max_tokens=int(max_tokens) if max_tokens is not None else None,
+        temperature=float(temperature),
+    )
+
+
+def build_embedder_for_tenant(
+    routing: dict | None, secrets: SecretProvider | None = None
+) -> EmbedderPort:
+    """Embedder según `model_routing["embedder"]`: openai | ollama | fake.
+
+    Default: `fake` (cero costo en dev/tests). El tenant comercial usa
+    "openai" (misma key del tenant que el chat).
+    """
+    from app.agent.embedder import FakeEmbedder, OpenAIEmbedder
+    from app.agent.ollama_embedder import OllamaEmbedder
+
+    routing = routing or {}
+    kind = str(routing.get("embedder") or DEFAULT_EMBEDDER).lower()
+    if kind == "openai":
+        secrets = secrets or EnvSecretProvider()
+        slug = routing.get("_tenant_slug") or ""
+        api_key = (
+            require_tenant_openai_key(secrets, slug) if slug else None
+        )
+        return OpenAIEmbedder(api_key=api_key)
+    if kind == "ollama":
+        return OllamaEmbedder(
+            model=routing.get("ollama_embed_model") or None,
+            base_url=routing.get("ollama_base_url") or None,
+        )
+    if kind == "fake":
+        return FakeEmbedder()
+    raise RuntimeError(
+        f"embedder desconocido en model_routing: '{kind}' "
+        "(válidos: 'openai', 'ollama', 'fake')"
+    )
+
+
+async def _record_llm_usage(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    llm: LLMPort,
+    resp,
+) -> None:
+    """Persiste el usage del turno. Si falla, loguea y el flujo SIGUE.
+
+    El costeo nunca debe romper una conversación con el cliente.
+    """
+    try:
+        usage = dict(getattr(resp, "usage", None) or {})
+        if not usage.get("prompt_tokens") and not usage.get("completion_tokens"):
+            return  # LLM local/stub sin usage: nada que costear
+        model = getattr(llm, "model", None) or "unknown"
+        await record_turn_usage(session, tenant_id, contact_id, None, model, usage)
+    except Exception:
+        logger.exception(
+            "No se pudo registrar usage del turno (tenant=%s); el flujo continúa",
+            tenant_id,
+        )
 
 
 async def run_agent(
@@ -135,6 +275,9 @@ async def run_agent(
             tools=tools,
             tool_choice=first_iter_tool_choice if i == 0 else None,
         )
+        # Costeo por turno (Fase 2): persiste el usage; si falla, loguea y
+        # el loop sigue (el costeo jamás rompe la conversación).
+        await _record_llm_usage(session, tenant_id, contact_id, llm, resp)
 
         # Guard de infraestructura (no confiamos ciegamente en el LLM):
         # si forzamos RAG en la primera iteración y el modelo NO devolvió un

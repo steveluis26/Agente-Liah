@@ -16,7 +16,6 @@ explícito (nunca se finge un envío).
 """
 import asyncio
 import logging
-import os
 
 import httpx
 from sqlalchemy import select
@@ -71,25 +70,20 @@ async def _post_with_retry(
     raise last_exc or RuntimeError("fallo de envío sin respuesta")
 
 
-def _resolve_token(secret_ref: str | None) -> str:
+def _resolve_token(
+    secret_ref: str | None,
+    provider: "SecretProvider | None" = None,
+) -> str:
     """Resuelve el token de envío del canal.
 
-    Lee `WA_TOKEN_<secret_ref>` del entorno (en prod vendrá de un secret
-    manager). FALLA si no hay secreto configurado: jamás usa el ref como
-    token (eso enviaría "PENDING" como Bearer y quemaría el intento).
+    Delegado a `app.agent.secrets` (Fase 2): el secreto por tenant se
+    resuelve vía SecretProvider. FALLA si no hay secreto configurado; jamás
+    usa el ref como token (eso enviaría "PENDING" como Bearer y quemaría el
+    intento).
     """
-    if not secret_ref or secret_ref == "PENDING":
-        raise RuntimeError(
-            "El canal no tiene token configurado (token_secret_ref vacío/PENDING). "
-            "Configura el secreto del tenant antes de enviar."
-        )
-    token = os.getenv(f"WA_TOKEN_{secret_ref}")
-    if not token:
-        raise RuntimeError(
-            f"No se resolvió el secreto WA_TOKEN_{secret_ref}. "
-            "Define la variable o conecta el secret manager."
-        )
-    return token
+    from app.agent.secrets import EnvSecretProvider, resolve_whatsapp_token
+
+    return resolve_whatsapp_token(provider or EnvSecretProvider(), secret_ref)
 
 
 async def _claim_idempotency(

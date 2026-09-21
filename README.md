@@ -29,10 +29,34 @@ python scripts/seed_fase0.py
 # 6. Arranca la API
 uvicorn app.main:app --reload --port 8000
 
-# 7. Tests (usa pyme_agent_test)
-TEST_DATABASE_URL=postgresql+asyncpg://pyme:pyme@localhost:5432/pyme_agent_test \
-  pytest -q
+# 7. Tests (usa pyme_agent_test, con proxies desactivados)
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy \
+    -u all_proxy -u NO_PROXY -u no_proxy python -m pytest -q
 ```
+
+## Configuración por tenant (Fase 2)
+
+El LLM y el embedder se eligen **por tenant** en `tenant_configs.model_routing`
+(JSONB), no por flags del cliente:
+
+```json
+{"llm_provider": "openai", "llm_model": "gpt-4o-mini",
+ "llm_max_tokens": 800, "llm_temperature": 0.2, "embedder": "openai"}
+```
+
+- `llm_provider`: `openai` (default comercial) u `ollama` (local/dev, costo 0).
+- La API key de OpenAI se resuelve **por tenant** vía `SecretProvider`
+  (ver `app/agent/secrets.py`): `OPENAI_API_KEY_TENANT_<SLUG>` (slug en
+  mayúsculas, no alfanuméricos → `_`), con fallback a `OPENAI_API_KEY`.
+  En producción se enchufa un secret manager real (stub `VaultSecretProvider`).
+- El token de WhatsApp se resuelve igual: `WA_TOKEN_<secret_ref>`.
+- Cada llamada al LLM deja su `usage` en `usage_records` (tokens in/out,
+  `cost_usd` según tabla de precios referencial en `app/agent/costing.py`);
+  `aggregate_monthly_usage()` genera el agregado `usage_monthly` que leerá el
+  panel de costos (Fase 3).
+- `EMBED_DIM` (default 1536, OpenAI) es la única fuente de verdad de la
+  dimensión de embeddings y se valida contra la columna pgvector al arrancar
+  (falla rápido ante mismatch 1536 vs 768).
 
 ## Endpoints (Fase 0)
 
@@ -63,5 +87,5 @@ TEST_DATABASE_URL=postgresql+asyncpg://pyme:pyme@localhost:5432/pyme_agent_test 
 
 ## Siguiente fase
 
-Fase 1: motor de agente (LLM + tool-calling), RAG con pgvector, y conexión
-a agenda (Cal.com / Google Calendar) como fuente de verdad de disponibilidad.
+Fase 3: panel mínimo (bandeja de handoff, config por tenant, métricas y costo
+visible). Ver `docs/DECISIONES_FASE2.md` para las decisiones de esta fase.

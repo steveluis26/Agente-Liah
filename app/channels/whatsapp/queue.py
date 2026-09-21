@@ -10,6 +10,7 @@ Diseño (ver docs/DECISIONES_FASE1.md):
   idempotency keys en el sender).
 """
 import logging
+import inspect
 import os
 import uuid
 from datetime import datetime, timezone
@@ -132,13 +133,21 @@ class _DevStubLLM:
         )
 
 
-def _default_llm(session: AsyncSession, tenant_id: uuid.UUID,
+async def _default_llm(session: AsyncSession, tenant_id: uuid.UUID,
                  embedder: EmbedderPort) -> LLMPort:
-    try:
-        from app.agent.llm import OpenAILLM
+    """LLM por defecto del drenador: factory por tenant (Fase 2).
 
-        return OpenAILLM()
-    except RuntimeError:
+    El tenant comercial usa OpenAI con su propia key (SecretProvider). Si el
+    tenant no tiene key configurada (dev/tests), se usa el stub local sin
+    API key en vez de fallar el job.
+    """
+    from app.agent.engine import build_llm_for_tenant
+
+    try:
+        return await build_llm_for_tenant(session, tenant_id)
+    except RuntimeError as e:
+        logger.info("Sin LLM comercial para el tenant %s (%s); uso stub dev",
+                    tenant_id, e)
         return _DevStubLLM(session, tenant_id, embedder)
 
 
@@ -203,7 +212,14 @@ async def drain_jobs(
             try:
                 set_tenant_id(job.tenant_id)
                 require_tenant()  # el aislamiento no es opcional
-                llm = (llm_factory or _default_llm)(session, job.tenant_id, embedder)
+                llm_or_coro = (llm_factory or _default_llm)(
+                    session, job.tenant_id, embedder
+                )
+                llm = (
+                    await llm_or_coro
+                    if inspect.isawaitable(llm_or_coro)
+                    else llm_or_coro
+                )
                 await _process_job(session, job, llm, embedder, dry_run)
                 job.status = "done"
                 job.error = None
