@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Campañas · Panel Liah{% endblock %}
+{% block content %}
+<h2 style="margin-top:0">Campañas y avisos</h2>
+<p class="muted" style="margin-top:-.4rem">Marketing por WhatsApp con opt-in obligatorio: solo reciben quienes lo aceptaron (promo <b>y</b> aviso). Solo plantillas <b>aprobadas por Meta</b>.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/admin/campaigns" class="row">
+    <label for="tenant" style="margin:0">Tenant</label>
+    <select id="tenant" name="tenant_id">
+      {% for t in tenants %}
+      <option value="{{ t.id }}" {% if tenant_filter==t.id %}selected{% endif %}>{{ t.name }} ({{ t.slug }})</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Ver</button>
+  </form>
+</div>
+{% if tenant_filter %}
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0">Nueva campaña</h3>
+  <div class="row">
+    <div style="flex:1;min-width:200px"><label>Nombre</label><input class="wide" type="text" id="c-name" placeholder="Promo mes del amor"></div>
+    <div><label>Tipo</label><select id="c-type"><option value="promo">promo</option><option value="notice">notice (aviso)</option></select></div>
+  </div>
+  <div class="row">
+    <div style="flex:1;min-width:200px"><label>Plantilla (solo aprobadas por Meta)</label>
+      <select id="c-template" class="wide">
+        {% for t in templates_approved %}<option value="{{ t.name }}">{{ t.name }} ({{ t.language }})</option>{% endfor %}
+      </select>
+      {% if not templates_approved %}<p class="muted">Sin plantillas aprobadas. Créalas en el Business Manager y márcalas como aprobadas en la sección Plantillas.</p>{% endif %}
+    </div>
+    <div><label>Programar para (opcional)</label><input type="text" id="c-scheduled" placeholder="2026-12-01T09:00:00"></div>
+  </div>
+  <label>Variables de la plantilla (JSON: {"nombre":"..."} o lista)</label>
+  <textarea class="code" id="c-params" placeholder='{"nombre": "Ana"}'></textarea>
+  <label>Segmento (JSON: {"contact_type":"client","tags":["vip"]}) — vacío = todos con opt-in</label>
+  <textarea class="code" id="c-segment" placeholder='{"contact_type": "client"}' style="min-height:60px"></textarea>
+  <div class="row" style="margin-top:.6rem"><button class="btn" onclick="createCampaign()">Crear borrador</button></div>
+</div>
+{% endif %}
+<div class="card">
+  <h3 style="margin-top:0">Campañas</h3>
+  {% if campaigns %}
+  <table><thead><tr><th>Nombre</th><th>Tipo</th><th>Plantilla</th><th>Estado</th><th>Destinatarios</th><th>Acciones</th></tr></thead><tbody>
+    {% for c in campaigns %}
+    <tr>
+      <td><b>{{ c.name }}</b><br><span class="muted mono">{{ c.id[:8] }}</span></td>
+      <td><span class="pill {{ 'taken' if c.type=='promo' else 'open' }}">{{ c.type }}</span></td>
+      <td class="mono">{{ c.template_name }}</td>
+      <td><span class="pill {{ c.status }}">{{ c.status }}</span>{% if c.last_error %}<br><span class="muted">{{ c.last_error }}</span>{% endif %}</td>
+      <td>{{ c.total_targets }}</td>
+      <td class="row">
+        <button class="btn ghost" onclick="showDetail('{{ c.id }}')">Detalle</button>
+        {% if can_manage and c.status in ('draft','scheduled') %}
+        <button class="btn ghost" onclick="estimate('{{ c.id }}')">Estimar</button>
+        <button class="btn" onclick="launch('{{ c.id }}')">Lanzar</button>
+        {% endif %}
+        {% if can_manage and c.status in ('draft','scheduled','sending') %}
+        <button class="btn warn" onclick="cancelC('{{ c.id }}')">Cancelar</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody></table>
+  {% else %}<p class="muted">Sin campañas. Crea la primera arriba.</p>{% endif %}
+</div>
+<div class="card" id="detail" style="display:none">
+  <h3 style="margin-top:0">Detalle y métricas</h3>
+  <div id="detail-body"></div>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+const TID = "{{ tenant_filter }}";
+const base = () => `/api/v1/admin/tenants/${TID}/campaigns`;
+function seg(){ try { return JSON.parse(document.getElementById('c-segment').value || '{}'); } catch(e){ toast('Segmento: JSON inválido', false); throw e; } }
+function par(){ try { return JSON.parse(document.getElementById('c-params').value || '{}'); } catch(e){ toast('Variables: JSON inválido', false); throw e; } }
+async function createCampaign(){
+  try {
+    const sched = document.getElementById('c-scheduled').value.trim();
+    const data = await api(base(), 'POST', {
+      name: document.getElementById('c-name').value.trim(),
+      type: document.getElementById('c-type').value,
+      template_name: document.getElementById('c-template').value,
+      params: par(), segment: seg(),
+      scheduled_at: sched || null,
+    });
+    toast('Campaña creada: ' + data.name);
+    location.reload();
+  } catch(e){ toast(e.message, false); }
+}
+async function estimate(id){
+  try {
+    const d = await api(`${base()}/${id}/estimate`, 'POST');
+    toast(`Destinatarios estimados (con opt-in): ${d.estimated_recipients}`);
+  } catch(e){ toast(e.message, false); }
+}
+async function launch(id){
+  const d = await api(`${base()}/${id}/estimate`, 'POST').catch(e=>{ toast(e.message,false); throw e; });
+  if (!confirm(`Lanzar campaña a ${d.estimated_recipients} destinatarios con opt-in?`)) return;
+  try {
+    await api(`${base()}/${id}/launch`, 'POST');
+    toast('Campaña lanzada: el worker la envía con pacing.');
+    location.reload();
+  } catch(e){ toast(e.message, false); }
+}
+async function cancelC(id){
+  if (!confirm('Cancelar la campaña? Los envíos pendientes no saldrán.')) return;
+  try { await api(`${base()}/${id}/cancel`, 'POST'); toast('Cancelada.'); location.reload(); }
+  catch(e){ toast(e.message, false); }
+}
+async function showDetail(id){
+  try {
+    const d = await api(`${base()}/${id}`);
+    const m = d.metrics;
+    const pill = s => `<span class="pill ${s}">${s}</span>`;
+    document.getElementById('detail-body').innerHTML = `
+      <div class="kpis">
+        <div class="kpi"><div class="v">${m.sent}</div><div class="l">Enviados</div></div>
+        <div class="kpi"><div class="v">${m.delivered}</div><div class="l">Entregados</div></div>
+        <div class="kpi"><div class="v">${m.read}</div><div class="l">Leídos</div></div>
+        <div class="kpi"><div class="v">${m.read_rate_pct === null ? '—' : m.read_rate_pct + '%'}</div><div class="l">Tasa de lectura</div></div>
+        <div class="kpi"><div class="v">${m.failed}</div><div class="l">Fallidos</div></div>
+        <div class="kpi"><div class="v">$${m.cost_usd.toFixed(4)}</div><div class="l">Costo marketing (USD)</div></div>
+      </div>
+      <h4>Muestra de envíos (100)</h4>
+      <table><thead><tr><th>Contacto</th><th>Estado</th><th>wamid</th><th>Enviado</th></tr></thead><tbody>
+      ${d.sends_sample.map(s => `<tr><td>${s.contact_name || ''} <span class="mono">${s.contact_wa_id}</span></td><td>${pill(s.status)}</td><td class="mono">${s.wamid || '—'}</td><td>${s.sent_at || '—'}</td></tr>`).join('')}
+      </tbody></table>`;
+    document.getElementById('detail').style.display = 'block';
+    document.getElementById('detail').scrollIntoView();
+  } catch(e){ toast(e.message, false); }
+}
+</script>
+{% endblock %}

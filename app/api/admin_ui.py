@@ -235,3 +235,93 @@ async def onboard_page(
             error="Solo un platform_admin puede dar de alta clientes.",
         )
     return _render("onboard.html", **_nav_ctx(user, "onboard"), error=None)
+
+
+@router.get("/campaigns", include_in_schema=False)
+async def campaigns_page(
+    request: Request,
+    tenant_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Página de campañas y avisos (Fase 6).
+
+    Sin lógica de negocio propia: lista plantillas aprobadas y campañas vía
+    la API JSON; crear/estimar/lanzar/cancelar se hace con fetch contra
+    `/api/v1/admin/*` (misma auth por cookie).
+    """
+    user = await _ui_user(request, session)
+    redir = _require_ui(user)
+    if redir:
+        return redir
+    tenants = await admin_api.list_tenants(user=user, session=session)
+    if tenant_id is None:
+        if user.tenant_id:
+            tenant_id = user.tenant_id
+        elif tenants:
+            tenant_id = uuid.UUID(tenants[0]["id"])
+    campaigns = []
+    templates_approved = []
+    error = None
+    if tenant_id is not None:
+        try:
+            campaigns = await admin_api.list_campaigns(
+                tenant_id=tenant_id, user=user, session=session
+            )
+            templates_approved = await admin_api.list_templates(
+                tenant_id=tenant_id, status="approved", user=user, session=session
+            )
+        except Exception as e:
+            error = str(e)
+    can_manage = user.is_platform_admin or user.role == "tenant_admin"
+    return _render(
+        "campaigns.html",
+        **_nav_ctx(user, "campaigns"),
+        tenants=tenants,
+        tenant_filter=str(tenant_id) if tenant_id else "",
+        campaigns=campaigns,
+        templates_approved=templates_approved,
+        can_manage=can_manage,
+        error=error,
+    )
+
+
+@router.get("/contacts", include_in_schema=False)
+async def contacts_page(
+    request: Request,
+    tenant_id: uuid.UUID | None = None,
+    opt_in: bool | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Página de contactos (Fase 6): opt-in de marketing visible, toggle y
+    tags. Todo vía fetch contra la API JSON."""
+    user = await _ui_user(request, session)
+    redir = _require_ui(user)
+    if redir:
+        return redir
+    tenants = await admin_api.list_tenants(user=user, session=session)
+    if tenant_id is None:
+        if user.tenant_id:
+            tenant_id = user.tenant_id
+        elif tenants:
+            tenant_id = uuid.UUID(tenants[0]["id"])
+    contacts = []
+    error = None
+    if tenant_id is not None:
+        try:
+            contacts = await admin_api.list_contacts(
+                tenant_id=tenant_id, opt_in=opt_in, contact_type=None, q=None,
+                user=user, session=session,
+            )
+        except Exception as e:
+            error = str(e)
+    can_manage = user.is_platform_admin or user.role == "tenant_admin"
+    return _render(
+        "contacts.html",
+        **_nav_ctx(user, "contacts"),
+        tenants=tenants,
+        tenant_filter=str(tenant_id) if tenant_id else "",
+        contacts=contacts,
+        can_manage=can_manage,
+        opt_in_filter="" if opt_in is None else ("1" if opt_in else "0"),
+        error=error,
+    )

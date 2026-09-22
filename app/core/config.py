@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     liah_jwt_secret: str = "change-me"
     liah_jwt_expire_minutes: int = 480  # 8h: jornada de un operador
 
+    # Fase 6 — campañas y avisos.
+    # Pacing anti-baneo: mensajes/segundo por defecto (conservador; el
+    # operador lo sube por tenant en extra["campaign_msgs_per_sec"]).
+    liah_campaign_rate_per_sec: float = 1.0
+    # Costo estimado por conversación de marketing (USD). Placeholder
+    # calibrable con la matriz de precios de Meta; por tenant en
+    # extra["campaign_cost_usd"].
+    liah_campaign_cost_usd: float = 0.06
+
     @model_validator(mode="after")
     def _forbid_default_secrets_in_production(self):
         if self.app_env == "production":

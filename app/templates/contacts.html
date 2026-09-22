@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Contactos · Panel Liah{% endblock %}
+{% block content %}
+<h2 style="margin-top:0">Contactos</h2>
+<p class="muted" style="margin-top:-.4rem">Opt-in de marketing visible por contacto. Sin opt-in, el contacto <b>no</b> recibe campañas ni avisos (regla anti-baneo).</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/admin/contacts" class="row">
+    <label for="tenant" style="margin:0">Tenant</label>
+    <select id="tenant" name="tenant_id">
+      {% for t in tenants %}
+      <option value="{{ t.id }}" {% if tenant_filter==t.id %}selected{% endif %}>{{ t.name }} ({{ t.slug }})</option>
+      {% endfor %}
+    </select>
+    <label for="optf" style="margin:0">Opt-in</label>
+    <select id="optf" name="opt_in">
+      <option value="" {% if opt_in_filter=='' %}selected{% endif %}>Todos</option>
+      <option value="1" {% if opt_in_filter=='1' %}selected{% endif %}>Con opt-in</option>
+      <option value="0" {% if opt_in_filter=='0' %}selected{% endif %}>Sin opt-in</option>
+    </select>
+    <button class="btn" type="submit">Ver</button>
+  </form>
+</div>
+{% if tenant_filter %}
+<div class="card">
+  <table><thead><tr><th>Contacto</th><th>Tipo</th><th>Opt-in marketing</th><th>Fuente</th><th>Tags</th>{% if can_manage %}<th>Acciones</th>{% endif %}</tr></thead><tbody>
+    {% for c in contacts %}
+    <tr>
+      <td><b>{{ c.name or '—' }}</b><br><span class="mono">{{ c.wa_id }}</span></td>
+      <td><span class="pill {{ 'resolved' if c.contact_type=='client' else 'open' }}">{{ c.contact_type }}</span></td>
+      <td>{% if c.marketing_opt_in %}<span class="pill resolved">SÍ</span>{% else %}<span class="pill open">NO</span>{% endif %}</td>
+      <td class="muted">{{ c.marketing_opt_in_source or '—' }}</td>
+      <td>{% for t in c.tags %}<span class="pill taken">{{ t }}</span> {% endfor %}</td>
+      {% if can_manage %}
+      <td class="row">
+        <button class="btn ghost" onclick="toggleOptIn('{{ c.id }}', {{ 'false' if c.marketing_opt_in else 'true' }})">{{ 'Quitar opt-in' if c.marketing_opt_in else 'Dar opt-in' }}</button>
+        <button class="btn ghost" onclick="addTag('{{ c.id }}')">+ tag</button>
+      </td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody></table>
+  {% if not contacts %}<p class="muted">Sin contactos.</p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+const TID = "{{ tenant_filter }}";
+const base = () => `/api/v1/admin/tenants/${TID}/contacts`;
+async function toggleOptIn(id, val){
+  try {
+    await api(`${base()}/${id}/opt-in`, 'POST', {opt_in: val, source: 'panel'});
+    toast(val ? 'Opt-in registrado (fuente: panel).' : 'Opt-in retirado: ya no recibirá campañas.');
+    location.reload();
+  } catch(e){ toast(e.message, false); }
+}
+async function addTag(id){
+  const tag = prompt('Tag (p.ej. vip):');
+  if (!tag) return;
+  try { await api(`${base()}/${id}/tags`, 'POST', {tag}); toast('Tag agregado.'); location.reload(); }
+  catch(e){ toast(e.message, false); }
+}
+</script>
+{% endblock %}

@@ -111,9 +111,44 @@ Levantar con el cliente (dueño o encargado):
 | Embeddings OpenAI | El cliente (misma key) | Solo al ingerir/actualizar conocimiento |
 | Número dedicado / verificación | El cliente | Requisito de Meta |
 | Tier Liah (operador) | El cliente, a nosotros | Incluye alta, panel, soporte; margen sobre el costo medido |
+| **Conversaciones de marketing (campañas/avisos)** | El cliente, directo a Meta | Categoría `marketing`: se cobra por conversación de 24 h iniciada por plantilla; cada envío se registra en `usage_records` (`kind=campaign`) con costo configurable (`LIAH_CAMPAIGN_COST_USD`, default 0.06 USD; calibrar con la matriz de Meta por país) |
 
 Regla de oro: **el esqueleto mide todo** (tokens y conversaciones por
 tenant) para que el margen del tier nunca se evapore en silencio.
+
+## Campañas y avisos (Fase 6) — política de opt-in y operación
+
+**Sin opt-in no hay envío. Punto.** Ni promociones ni avisos
+institucionales (suspensión de clases, cambios de horario): un HSM no
+solicitado es spam y Meta banea el número del negocio. El ban no es un
+"error que se corrige": se pierde el canal.
+
+- [ ] **Captura de opt-in**: (a) por palabra clave en conversación
+      ("quiero recibir promociones" → opt-in; "baja" → opt-out inmediato),
+      (b) toggle en el panel (fuente `panel`, operador identificado),
+      (c) importación masiva con evidencia (fuente `import`: el cliente
+      entrega la prueba del consentimiento — lista firmada, formulario).
+      El opt-in por keyword queda auditado en `event_log`.
+- [ ] **Plantillas de campaña aprobadas**: crear la plantilla de marketing
+      en el Business Manager (categoría `marketing`), esperar la aprobación
+      de Meta (días/semanas, dependencia del cliente) y marcarla `approved`
+      en el panel (Campañas → Plantillas). El lanzamiento exige plantilla
+      aprobada: sin eso, 422 y la campaña no sale de borrador.
+- [ ] **Flujo de lanzamiento**: crear en `/admin/campaigns` (tipo, plantilla
+      aprobada, segmento, variables, programar) → **estimar destinatarios**
+      (aplica segmento + opt-in; revisarlo antes de lanzar) → lanzar. El
+      worker envía con pacing (default 1 msg/seg por tenant, configurable).
+- [ ] **Segmentación**: `prospect` (llegó por el canal) vs `client` (ya
+      agendó; el sistema lo promueve solo al confirmar la cita). Tags libres
+      por contacto (`vip`, `pediatria`…) con OR entre ellos.
+- [ ] **Métricas post-campaña**: enviados, entregados, leídos, tasa de
+      lectura (leídos/entregados) y costo total en el detalle de la campaña.
+      Los `statuses` de Meta (delivered/read) se matchean por `wamid`.
+
+**Alcance comercial**: las campañas son feature de tier superior (el
+cliente paga las conversaciones de marketing a Meta + el tier). No
+prometer "envío masivo gratis": cada mensaje tiene costo y riesgo de baneo
+si se abusa.
 
 ## Alcance: incluido vs. cambio menor vs. nuevo desarrollo
 

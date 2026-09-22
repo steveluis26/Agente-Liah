@@ -37,10 +37,14 @@ from app.core.db import get_session
 from app.models import (
     ActionLog,
     Appointment,
+    Campaign,
+    CampaignSend,
     Contact,
+    ContactTag,
     Conversation,
     Handoff,
     Message,
+    Template,
     Tenant,
     TenantConfig,
     UsageMonthly,
@@ -463,6 +467,464 @@ async def update_tenant_config(
         cfg.model_routing = routing
     await session.commit()
     return _config_public(cfg, tenant)
+
+
+# ── Campañas y avisos (Fase 6) ─────────────────────────────────────────
+#
+# Solo platform_admin y tenant_admin crean/lanzan campañas (el dinero de
+# Meta y el riesgo de baneo lo decide quien opera el negocio, no el agente).
+# Los templates solo se envían si están APROBADOS por Meta; el estado se
+# marca en el panel (Campañas → Plantillas) tras la aprobación en el
+# Business Manager (ver docs/GUIA_ALTA.md: dependencia del cliente).
+
+
+from app.marketing import campaigns as campaign_svc  # noqa: E402
+from app.marketing.optin import OPTIN_SOURCES, set_opt_in  # noqa: E402
+from app.core.audit import log_event  # noqa: E402
+
+CAMPAIGN_ADMIN_ROLES = (ROLE_PLATFORM_ADMIN, ROLE_TENANT_ADMIN)
+TEMPLATE_STATUSES = ("pending", "approved", "rejected")
+
+
+class CampaignCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    type: str = Field(default="promo")  # promo|notice
+    template_name: str = Field(min_length=1, max_length=80)
+    params: dict = Field(default_factory=dict)
+    segment: dict = Field(default_factory=dict)
+    scheduled_at: datetime | None = None
+
+    @field_validator("type")
+    @classmethod
+    def _type(cls, v):
+        if v not in ("promo", "notice"):
+            raise ValueError("type válido: 'promo' | 'notice'")
+        return v
+
+
+def _campaign_public(c: Campaign) -> dict:
+    return {
+        "id": str(c.id),
+        "tenant_id": str(c.tenant_id),
+        "name": c.name,
+        "type": c.type,
+        "template_name": c.template_name,
+        "params": c.params,
+        "segment": c.segment,
+        "status": c.status,
+        "scheduled_at": c.scheduled_at.isoformat() if c.scheduled_at else None,
+        "launched_at": c.launched_at.isoformat() if c.launched_at else None,
+        "total_targets": c.total_targets,
+        "last_error": c.last_error,
+        "created_by": c.created_by,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
+async def _get_scoped_campaign(
+    session: AsyncSession, campaign_id: uuid.UUID, user: CurrentUser
+) -> Campaign:
+    c = await session.get(Campaign, campaign_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="campaña no encontrada")
+    require_tenant_access(c.tenant_id, user)
+    return c
+
+
+@router.post("/tenants/{tenant_id}/campaigns", status_code=201)
+async def create_campaign(
+    tenant_id: uuid.UUID,
+    body: CampaignCreate,
+    user: CurrentUser = Depends(require_tenant_role(*CAMPAIGN_ADMIN_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Crea una campaña en draft (o scheduled si trae scheduled_at).
+
+    NO valida aprobación de Meta aquí: eso se valida en el launch (422 con
+    mensaje accionable si la plantilla no está aprobada).
+    """
+    require_tenant_access(tenant_id, user)
+    try:
+        c = await campaign_svc.create_campaign(
+            session, tenant_id,
+            name=body.name, type=body.type, template_name=body.template_name,
+            params=body.params, segment=body.segment,
+            scheduled_at=body.scheduled_at, created_by=user.email,
+        )
+    except campaign_svc.CampaignError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await session.commit()
+    return _campaign_public(c)
+
+
+@router.get("/tenants/{tenant_id}/campaigns")
+async def list_campaigns(
+    tenant_id: uuid.UUID,
+    user: CurrentUser = Depends(require_tenant_role(*PANEL_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    require_tenant_access(tenant_id, user)
+    rows = (
+        await session.execute(
+            select(Campaign)
+            .where(Campaign.tenant_id == tenant_id)
+            .order_by(Campaign.created_at.desc())
+        )
+    ).scalars().all()
+    return [_campaign_public(c) for c in rows]
+
+
+@router.get("/tenants/{tenant_id}/campaigns/{campaign_id}")
+async def get_campaign(
+    tenant_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    user: CurrentUser = Depends(require_tenant_role(*PANEL_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Detalle + métricas (enviados/entregados/leídos/fallidos, tasa de
+    lectura, costo) + muestra de envíos."""
+    require_tenant_access(tenant_id, user)
+    c = await _get_scoped_campaign(session, campaign_id, user)
+    metrics = await campaign_svc.campaign_metrics(session, tenant_id, c.id)
+    sends = (
+        await session.execute(
+            select(CampaignSend, Contact.wa_id, Contact.name)
+            .join(Contact, Contact.id == CampaignSend.contact_id)
+            .where(CampaignSend.campaign_id == c.id)
+            .order_by(CampaignSend.created_at.asc())
+            .limit(100)
+        )
+    ).all()
+    return {
+        "campaign": _campaign_public(c),
+        "metrics": metrics,
+        "sends_sample": [
+            {
+                "contact_wa_id": wa_id,
+                "contact_name": name,
+                "status": s.status,
+                "wamid": s.wamid,
+                "sent_at": s.sent_at.isoformat() if s.sent_at else None,
+            }
+            for s, wa_id, name in sends
+        ],
+    }
+
+
+@router.post("/tenants/{tenant_id}/campaigns/{campaign_id}/estimate")
+async def estimate_campaign(
+    tenant_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    user: CurrentUser = Depends(require_tenant_role(*PANEL_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Destinatarios estimados ANTES de lanzar (segmento + opt-in aplicado).
+
+    Llamar esto antes del launch es el paso que evita sorpresas: muestra
+    cuántos contactos reales recibirían el mensaje.
+    """
+    require_tenant_access(tenant_id, user)
+    c = await _get_scoped_campaign(session, campaign_id, user)
+    try:
+        n = await campaign_svc.estimate_recipients(session, tenant_id, c.segment)
+    except campaign_svc.CampaignError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"campaign_id": str(c.id), "estimated_recipients": n}
+
+
+@router.post("/tenants/{tenant_id}/campaigns/{campaign_id}/launch")
+async def launch_campaign(
+    tenant_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    user: CurrentUser = Depends(
+        require_tenant_role(*CAMPAIGN_ADMIN_ROLES)
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """Lanza la campaña: valida plantilla aprobada por Meta (422 si no) y
+    encola los envíos. El envío real con pacing lo hace el worker."""
+    require_tenant_access(tenant_id, user)
+    try:
+        c = await campaign_svc.launch_campaign(
+            session, tenant_id, campaign_id, dry_run=False
+        )
+    except campaign_svc.CampaignError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await session.commit()
+    return _campaign_public(c)
+
+
+@router.post("/tenants/{tenant_id}/campaigns/{campaign_id}/cancel")
+async def cancel_campaign(
+    tenant_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    user: CurrentUser = Depends(
+        require_tenant_role(*CAMPAIGN_ADMIN_ROLES)
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    require_tenant_access(tenant_id, user)
+    try:
+        c = await campaign_svc.cancel_campaign(session, tenant_id, campaign_id)
+    except campaign_svc.CampaignError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await session.commit()
+    return _campaign_public(c)
+
+
+# ── Plantillas: estado de aprobación Meta ───────────────────────────────
+
+
+@router.get("/tenants/{tenant_id}/templates")
+async def list_templates(
+    tenant_id: uuid.UUID,
+    status: str | None = Query(default=None,
+                              description="pending|approved|rejected"),
+    user: CurrentUser = Depends(require_tenant_role(*PANEL_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Plantillas HSM del tenant (la UI de campañas filtra las aprobadas)."""
+    require_tenant_access(tenant_id, user)
+    q = select(Template).where(Template.tenant_id == tenant_id).order_by(
+        Template.name.asc()
+    )
+    if status is not None:
+        if status not in TEMPLATE_STATUSES:
+            raise HTTPException(status_code=422, detail="status inválido")
+        q = q.where(Template.status == status)
+    rows = (await session.execute(q)).scalars().all()
+    return [
+        {
+            "id": str(t.id),
+            "name": t.name,
+            "category": t.category,
+            "language": t.language,
+            "body": t.body,
+            "variables": t.variables,
+            "status": t.status,
+        }
+        for t in rows
+    ]
+
+
+class TemplateStatusUpdate(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v):
+        if v not in TEMPLATE_STATUSES:
+            raise ValueError(
+                f"status válido: {' | '.join(TEMPLATE_STATUSES)}"
+            )
+        return v
+
+
+@router.patch("/tenants/{tenant_id}/templates/{template_id}/status")
+async def set_template_status(
+    tenant_id: uuid.UUID,
+    template_id: uuid.UUID,
+    body: TemplateStatusUpdate,
+    user: CurrentUser = Depends(
+        require_tenant_role(*CAMPAIGN_ADMIN_ROLES)
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """Marca el estado de aprobación de Meta de una plantilla.
+
+    Flujo real: el operador crea la plantilla en el Business Manager, Meta
+    la aprueba (días de calendario), y AQUÍ se refleja ese estado. El launch
+    de campañas solo acepta 'approved'.
+    """
+    require_tenant_access(tenant_id, user)
+    tpl = await session.get(Template, template_id)
+    if tpl is None or tpl.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="plantilla no encontrada")
+    tpl.status = body.status
+    await log_event(
+        session, tenant_id, "template.status_changed",
+        {"template_id": str(tpl.id), "name": tpl.name,
+         "status": body.status, "by": user.email},
+    )
+    await session.commit()
+    return {"id": str(tpl.id), "name": tpl.name, "status": tpl.status}
+
+
+# ── Contactos: opt-in visible + tags ────────────────────────────────────
+
+
+@router.get("/tenants/{tenant_id}/contacts")
+async def list_contacts(
+    tenant_id: uuid.UUID,
+    opt_in: bool | None = Query(default=None,
+                                description="filtra por marketing_opt_in"),
+    contact_type: str | None = Query(default=None,
+                                     description="client|prospect"),
+    q: str | None = Query(default=None, max_length=60,
+                          description="busca en wa_id/nombre"),
+    user: CurrentUser = Depends(require_tenant_role(*PANEL_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Lista de contactos con opt-in de marketing visible (Fase 6)."""
+    require_tenant_access(tenant_id, user)
+    stmt = (
+        select(Contact)
+        .where(Contact.tenant_id == tenant_id)
+        .order_by(Contact.last_interaction_at.desc().nulls_last(),
+                  Contact.created_at.desc())
+        .limit(200)
+    )
+    if opt_in is not None:
+        stmt = stmt.where(Contact.marketing_opt_in.is_(opt_in))
+    if contact_type is not None:
+        if contact_type not in ("client", "prospect"):
+            raise HTTPException(status_code=422, detail="contact_type inválido")
+        stmt = stmt.where(Contact.contact_type == contact_type)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            (Contact.wa_id.like(like)) | (Contact.name.like(like))
+        )
+    rows = (await session.execute(stmt)).scalars().all()
+    tag_rows: list = []
+    if rows:
+        tag_rows = (
+            await session.execute(
+                select(ContactTag.contact_id, ContactTag.tag).where(
+                    ContactTag.tenant_id == tenant_id,
+                    ContactTag.contact_id.in_([c.id for c in rows]),
+                )
+            )
+        ).all()
+    tags_by_contact: dict = {}
+    for cid, tag in tag_rows:
+        tags_by_contact.setdefault(str(cid), []).append(tag)
+    return [
+        {
+            "id": str(c.id),
+            "wa_id": c.wa_id,
+            "name": c.name,
+            "contact_type": c.contact_type,
+            "marketing_opt_in": c.marketing_opt_in,
+            "marketing_opt_in_at": (
+                c.marketing_opt_in_at.isoformat()
+                if c.marketing_opt_in_at else None
+            ),
+            "marketing_opt_in_source": c.marketing_opt_in_source,
+            "tags": tags_by_contact.get(str(c.id), []),
+            "last_interaction_at": (
+                c.last_interaction_at.isoformat()
+                if c.last_interaction_at else None
+            ),
+        }
+        for c in rows
+    ]
+
+
+class OptInBody(BaseModel):
+    opt_in: bool
+    source: str = "panel"  # panel|import|onboarding (keyword lo pone el drenador)
+
+    @field_validator("source")
+    @classmethod
+    def _source(cls, v):
+        if v not in OPTIN_SOURCES or v == "keyword":
+            raise ValueError(
+                "source válido: 'panel' | 'import' | 'onboarding'"
+            )
+        return v
+
+
+@router.post("/tenants/{tenant_id}/contacts/{contact_id}/opt-in")
+async def set_contact_opt_in(
+    tenant_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    body: OptInBody,
+    user: CurrentUser = Depends(
+        require_tenant_role(*CAMPAIGN_ADMIN_ROLES)
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """Toggle manual de opt-in de marketing (con evidencia de la fuente)."""
+    require_tenant_access(tenant_id, user)
+    contact = await session.get(Contact, contact_id)
+    if contact is None or contact.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="contacto no encontrado")
+    await set_opt_in(session, tenant_id, contact, body.opt_in, body.source)
+    await session.commit()
+    return {
+        "id": str(contact.id),
+        "marketing_opt_in": contact.marketing_opt_in,
+        "marketing_opt_in_source": contact.marketing_opt_in_source,
+    }
+
+
+class TagBody(BaseModel):
+    tag: str = Field(min_length=1, max_length=40)
+
+    @field_validator("tag")
+    @classmethod
+    def _tag(cls, v):
+        return v.strip().lower().replace(" ", "_")
+
+
+@router.post("/tenants/{tenant_id}/contacts/{contact_id}/tags",
+             status_code=201)
+async def add_contact_tag(
+    tenant_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    body: TagBody,
+    user: CurrentUser = Depends(
+        require_tenant_role(*CAMPAIGN_ADMIN_ROLES)
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    require_tenant_access(tenant_id, user)
+    contact = await session.get(Contact, contact_id)
+    if contact is None or contact.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="contacto no encontrado")
+    existing = (
+        await session.execute(
+            select(ContactTag).where(
+                ContactTag.tenant_id == tenant_id,
+                ContactTag.contact_id == contact.id,
+                ContactTag.tag == body.tag,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        session.add(ContactTag(
+            tenant_id=tenant_id, contact_id=contact.id, tag=body.tag
+        ))
+        await session.commit()
+    return {"contact_id": str(contact.id), "tag": body.tag}
+
+
+@router.delete("/tenants/{tenant_id}/contacts/{contact_id}/tags/{tag}")
+async def remove_contact_tag(
+    tenant_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    tag: str,
+    user: CurrentUser = Depends(
+        require_tenant_role(*CAMPAIGN_ADMIN_ROLES)
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    require_tenant_access(tenant_id, user)
+    row = (
+        await session.execute(
+            select(ContactTag).where(
+                ContactTag.tenant_id == tenant_id,
+                ContactTag.contact_id == contact_id,
+                ContactTag.tag == tag,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="tag no encontrado")
+    await session.delete(row)
+    await session.commit()
+    return {"status": "deleted"}
 
 
 # ── Métricas (lente "ganar clientes", Fase 5b) ──────────────────────────

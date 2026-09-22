@@ -6,8 +6,8 @@ Esqueleto **multi-tenant** de grado producción (FastAPI async +
 PostgreSQL/pgvector): un solo motor de agente parametrizado por negocio,
 dado de alta con una plantilla declarativa por giro (`templates/<giro>.yaml`).
 Vertical objetivo: **consultorios médicos** (conocimiento, agenda,
-handoff ante urgencias, recordatorios). Estado: **5 fases completas**,
-101 tests verdes, demo end-to-end `DEMO OK (4/4 rutas)`.
+handoff ante urgencias, recordatorios). Estado: **6 fases completas**,
+131 tests verdes, demo end-to-end `DEMO OK (4/4 rutas)`.
 
 ## Quickstart (5 minutos)
 
@@ -233,7 +233,7 @@ Los `templates/<giro>.yaml` son la fuente de verdad versionada del giro
 quedan registradas como pendientes de aprobación en Meta: créalas/apruébalas
 en el panel de Meta antes de activar recordatorios reales.
 
-## Estado final del esqueleto (Fase 5 completada)
+## Estado final del esqueleto (Fase 6 completada)
 
 - **Fase 1** — Motor endurecido: idempotencia (wamid, action_log, constraints
   únicos), cola persistente, guards RAG/anti-doble-agenda/escalación real.
@@ -248,7 +248,16 @@ en el panel de Meta antes de activar recordatorios reales.
   `Makefile` (`up/down/migrate/test/onboard/demo/seed-admin`) y
   `docs/GUIA_ALTA.md`.
 
-**Pendiente (Fase 6+)**: empaque comercial (Dockerfiles, compose
+- **Fase 5b** — Plantillas de giro escuela/danza + métricas con lente
+  "ganar clientes" (citas agendadas, leads capturados, fuera de horario).
+- **Fase 6** — Módulo de campañas y avisos: opt-in de marketing por palabra
+  clave (obligatorio, incluso para avisos), segmentación prospect/client +
+  tags, campañas promo/notice solo con plantillas aprobadas por Meta,
+  dispatch con pacing anti-baneo en el worker, statuses delivered/read por
+  wamid, métricas y costo por envío en `usage_records` (`kind=campaign`);
+  panel `/admin/campaigns` + `/admin/contacts`.
+
+**Pendiente (Fase 7+)**: empaque comercial (Dockerfiles, compose
 api+worker+migrate, `uv.lock`, `docs/DEPLOY.md`), RLS/defensa en
 profundidad del aislamiento, aviso de privacidad y revocación (LFPDPPP),
 canales Instagram/Facebook, y verificación con Meta real (aprobación de

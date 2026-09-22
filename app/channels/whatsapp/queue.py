@@ -35,6 +35,7 @@ from app.channels.adapter import (
 )
 from app.core.audit import log_event
 from app.core.tenant_ctx import clear_tenant_id, require_tenant, set_tenant_id
+from app.marketing.optin import OPTIN_ACK, OPTOUT_ACK, process_marketing_keyword
 from app.models import (
     Contact,
     Message,
@@ -334,6 +335,27 @@ async def _process_job(
         await log_event(session, tenant_id, "message.processed",
                         {"wamid": wamid, "contact_id": str(contact.id)})
         await session.commit()
+
+        # Fase 6: regla de opt-in/opt-out de marketing por palabra clave
+        # (determinista, sin LLM; configurable por tenant). Si el mensaje
+        # era un opt-in/opt-out, se confirma con respuesta enlatada y NO
+        # pasa por el agente: el consentimiento se procesa de inmediato.
+        kw_verdict = await process_marketing_keyword(
+            session, tenant_id, contact, body
+        )
+        if kw_verdict in ("optin", "optout"):
+            sender = WhatsAppCloudSender(session)
+            await sender.send_text(
+                str(tenant_id), str(contact.id), wa_id,
+                OPTIN_ACK if kw_verdict == "optin" else OPTOUT_ACK,
+                idempotency_key=f"webhook:{wamid}:marketing-{kw_verdict}",
+                dry_run=dry_run,
+            )
+            await log_event(session, tenant_id, "marketing.keyword_replied",
+                            {"wamid": wamid, "contact_id": str(contact.id),
+                             "verdict": kw_verdict})
+            await session.commit()
+            continue
 
         # Conversación del contacto (Fase 3): se crea o reutiliza por contacto;
         # el handoff la pone en `human`, "devolver al bot" la regresa a `ai`.

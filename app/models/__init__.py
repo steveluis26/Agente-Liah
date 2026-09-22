@@ -1,6 +1,7 @@
 from app.models.action_log import ActionLog
 from app.models.appointments import Appointment
 from app.models.automation_rules import AutomationRule, ReminderLog
+from app.models.campaigns import Campaign, CampaignSend, ContactTag
 from app.models.contacts import Contact
 from app.models.conversations import Conversation
 from app.models.event_log import EventLog
@@ -36,4 +37,7 @@ __all__ = [
     "WebhookJob",
     "UsageRecord",
     "UsageMonthly",
+    "Campaign",
+    "CampaignSend",
+    "ContactTag",
 ]

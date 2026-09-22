@@ -27,6 +27,13 @@ class UsageRecord(Base, TenantMixin):
     tokens_in: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tokens_out: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), default=0, nullable=False)
+    # Fase 6: origen del costo. "llm" = turno del agente (Fase 2);
+    # "campaign" = envío de campaña/aviso de marketing (lo paga el cliente:
+    # Meta cobra las conversaciones de marketing por separado).
+    kind: Mapped[str] = mapped_column(String(20), default="llm", nullable=False)
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         server_default=text("now()"), nullable=False
     )

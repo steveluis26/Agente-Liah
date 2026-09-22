@@ -4,9 +4,12 @@ Entrypoint: `python -m app.worker`
 
 Un solo proceso que, en loop asyncio:
   (a) drena `webhook_jobs` pendientes (reusa el drenador de Fase 1:
-      `app/channels/whatsapp/queue.py::drain_jobs`), y
+      `app/channels/whatsapp/queue.py::drain_jobs`),
   (b) ejecuta el scheduler de recordatorios (reusa
-      `app/reminders/scheduler.py::run_once`).
+      `app/reminders/scheduler.py::run_once`), y
+  (c) despacha campañas/aviso de marketing (Fase 6:
+      `app/marketing/campaigns.py::dispatch_campaigns`, con pacing
+      anti-baneo).
 
 En producción este worker corre SEPARADO de la API. En dev, `app/main.py`
 sigue arrancando el scheduler in-process en el lifespan (ver su docstring):
@@ -48,14 +51,16 @@ async def run_cycle(
     dry_run: bool | None = None,
     run_reminders: bool = True,
     reminder_dry_run: bool = False,
+    run_campaigns: bool = True,
 ) -> dict:
-    """UN ciclo del worker: drena la cola y (opcional) corre recordatorios.
+    """UN ciclo del worker: drena la cola, corre recordatorios y campañas.
 
     Diseñada para ser testeable sin loop infinito: los tests llaman a esta
-    función directamente. Devuelve estadísticas del drenado y cualquier error
-    del scheduler (que nunca debe tumbar el ciclo).
+    función directamente. Devuelve estadísticas del drenado, de campañas y
+    cualquier error del scheduler (que nunca debe tumbar el ciclo).
     """
-    from app.channels.whatsapp.queue import drain_jobs
+    from app.channels.whatsapp.queue import _dry_run_default, drain_jobs
+    from app.marketing.campaigns import dispatch_campaigns
     from app.reminders.scheduler import run_once
 
     stats = await drain_jobs(
@@ -71,7 +76,23 @@ async def run_cycle(
         except Exception as e:  # noqa: BLE001 - el worker no debe morir
             reminder_error = f"{type(e).__name__}: {e}"
             logger.exception("Error en ciclo de recordatorios")
-    return {"drain": stats, "reminder_error": reminder_error}
+    campaign_stats: dict | None = None
+    campaign_error = None
+    if run_campaigns:
+        try:
+            campaign_stats = await dispatch_campaigns(
+                session_maker,
+                dry_run=bool(dry_run) if dry_run is not None else _dry_run_default(),
+            )
+        except Exception as e:  # noqa: BLE001 - el worker no debe morir
+            campaign_error = f"{type(e).__name__}: {e}"
+            logger.exception("Error en dispatch de campañas")
+    return {
+        "drain": stats,
+        "reminder_error": reminder_error,
+        "campaigns": campaign_stats,
+        "campaign_error": campaign_error,
+    }
 
 
 async def amain() -> None:

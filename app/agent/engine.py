@@ -40,7 +40,7 @@ from app.agent.secrets import (
     require_tenant_openai_key,
 )
 from app.core.audit import log_event
-from app.models import Handoff, Message, Tenant, TenantConfig
+from app.models import Contact, Handoff, Message, Tenant, TenantConfig
 from app.models.conversations import MODE_HUMAN, set_conversation_mode
 
 logger = logging.getLogger("liah.engine")
@@ -398,6 +398,18 @@ async def run_agent(
                 "role": "tool", "tool_call_id": tc["id"],
                 "content": json.dumps(result, default=str),
             })
+
+            # Fase 6: evento de conversión. Un book confirmado promueve el
+            # contacto prospect → client (criterio de segmentación de
+            # campañas; ver docs/DECISIONES_FASE6.md).
+            if tc["name"] == "book_appointment" and result.get("ok"):
+                from app.marketing.optin import mark_contact_client
+
+                contact = await session.get(Contact, contact_id)
+                if contact is not None:
+                    await mark_contact_client(
+                        session, tenant_id, contact, reason="book_appointment"
+                    )
 
             if tc["name"] == "escalate_to_human" and result.get("escalated"):
                 # La tool ya creó el Handoff; el bot cierra con aviso.

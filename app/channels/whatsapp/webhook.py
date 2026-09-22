@@ -9,7 +9,8 @@ Contrato:
 - POST /webhook/whatsapp/jobs/{id}/reprocess -> reintenta un trabajo fallido.
 
 Comportamiento ante payloads:
-- `value.statuses`: solo auditoría, no generan trabajo ni respuesta.
+- `value.statuses`: auditoría + matcheo contra envíos de campaña (Fase 6:
+  delivered/read/failed por wamid); no generan trabajo ni respuesta.
 - mensajes no-texto: no crashean, no insertan vacíos (el drenador responde
   cortés por el canal).
 - `phone_number_id` desconocido: rechazo seguro (200 + log, sin procesar).
@@ -30,6 +31,7 @@ from app.core.audit import log_event
 from app.core.config import get_settings
 from app.core.db import async_session_maker, get_session
 from app.core.tenant_ctx import clear_tenant_id, set_tenant_id
+from app.marketing.campaigns import process_delivery_statuses
 from app.models import WhatsappChannel
 from app.schemas.whatsapp import WhatsappWebhookPayload
 
@@ -95,12 +97,22 @@ async def receive(
                 continue
             set_tenant_id(channel.tenant_id)
             try:
-                # statuses tipados en el schema: solo auditoría.
+                # statuses tipados en el schema: auditoría + matcheo contra
+                # envíos de campaña (Fase 6: delivered/read por wamid).
                 if value.statuses:
                     await log_event(
                         session, channel.tenant_id, "webhook.statuses",
                         {"count": len(value.statuses),
                          "phone_number_id": phone_number_id},
+                    )
+                    await process_delivery_statuses(
+                        session, channel.tenant_id,
+                        [
+                            {"id": st.id, "status": st.status,
+                             "timestamp": st.timestamp,
+                             "recipient_id": st.recipient_id}
+                            for st in value.statuses
+                        ],
                     )
                 if value.messages:
                     job = await enqueue_job(

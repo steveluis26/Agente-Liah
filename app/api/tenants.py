@@ -10,7 +10,7 @@ import httpx
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -286,6 +286,16 @@ class TemplateCreate(BaseModel):
     body: str
     variables: list = []
     status: str = "pending"
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v):
+        # Fase 6: el launch de campañas solo acepta 'approved'.
+        if v not in ("pending", "approved", "rejected"):
+            raise ValueError(
+                "status válido: 'pending' | 'approved' | 'rejected'"
+            )
+        return v
 
 
 @router.post("/me/templates", status_code=status.HTTP_201_CREATED)
