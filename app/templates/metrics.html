@@ -2,6 +2,7 @@
 {% block title %}Métricas · Panel Liah{% endblock %}
 {% block content %}
 <h2 style="margin-top:0">Métricas y costo</h2>
+<p class="muted" style="margin-top:-.4rem">Lo que el asistente generó por ti: el valor de negocio en los últimos {{ days }} días.</p>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 <div class="card">
   <form method="get" action="/admin/metrics" class="row">
@@ -22,11 +23,17 @@
 </div>
 {% if metrics %}
 <div class="kpis">
+  <div class="kpi"><div class="v">{{ metrics.appointments_scheduled }}</div><div class="l">Citas agendadas</div></div>
+  <div class="kpi"><div class="v">{{ metrics.leads_captured }}</div><div class="l">Leads capturados</div></div>
+  <div class="kpi"><div class="v">{% if metrics.after_hours is not none %}{{ metrics.after_hours.attended }} de {{ metrics.after_hours.outside_hours }}{% else %}—{% endif %}</div><div class="l">Mensajes fuera de horario atendidos</div></div>
+  <div class="kpi"><div class="v">{% if metrics.after_hours is not none and metrics.after_hours.attended_pct is not none %}{{ metrics.after_hours.attended_pct }}%{% else %}—{% endif %}</div><div class="l">% atendidos fuera de horario</div></div>
+  <div class="kpi"><div class="v">{{ metrics.avg_first_response_seconds if metrics.avg_first_response_seconds is not none else '—' }}{% if metrics.avg_first_response_seconds is not none %}s{% endif %}</div><div class="l">1ª respuesta media</div></div>
+</div>
+<div class="kpis" style="margin-top:.8rem">
   <div class="kpi"><div class="v">{{ metrics.conversations.total }}</div><div class="l">Conversaciones ({{ metrics.days }}d)</div></div>
   <div class="kpi"><div class="v">{{ metrics.conversations.closed }}</div><div class="l">Cerradas</div></div>
   <div class="kpi"><div class="v">{{ metrics.conversations.auto_resolution_pct if metrics.conversations.auto_resolution_pct is not none else '—' }}{% if metrics.conversations.auto_resolution_pct is not none %}%{% endif %}</div><div class="l">Resolución automática</div></div>
   <div class="kpi"><div class="v">{{ metrics.transfers }}</div><div class="l">Transferencias a humano</div></div>
-  <div class="kpi"><div class="v">{{ metrics.avg_first_response_seconds if metrics.avg_first_response_seconds is not none else '—' }}{% if metrics.avg_first_response_seconds is not none %}s{% endif %}</div><div class="l">1ª respuesta media ({{ metrics.first_responses_measured }} medidas)</div></div>
 </div>
 <div class="kpis" style="margin-top:.8rem">
   <div class="kpi"><div class="v">${{ '%.4f'|format(metrics.cost_usd.total_window) }}</div><div class="l">Costo LLM ventana (USD)</div></div>

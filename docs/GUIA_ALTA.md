@@ -1,9 +1,26 @@
 # Guía de alta de un cliente nuevo — Esqueleto Liah
 
-Checklist repetible para dar de alta un negocio (hoy: consultorios médicos;
-el mecanismo es el mismo para cualquier giro con plantilla en `templates/`)
-en **2 a 5 días hábiles de ingeniería**. Los tiempos calendario pueden
-extenderse por dependencias del cliente (marcadas con ⚠️).
+Checklist repetible para dar de alta un negocio en **2 a 5 días hábiles de
+ingeniería**. Los tiempos calendario pueden extenderse por dependencias del
+cliente (marcadas con ⚠️).
+
+## Plantillas de giro disponibles (Fase 5b)
+
+El alta se hace eligiendo una plantilla en `templates/` (listadas también en
+`/admin/onboard`). Negocios ficticios de ejemplo; el operador personaliza con
+overrides sin tocar el YAML:
+
+| Plantilla | Giro que cubre | Acción principal | Recordatorios |
+|---|---|---|---|
+| `consultorio_medico` | Consultorios / clínicas médicas | Agendar/cancelar/reprogramar citas | 24 h y 2 h antes (consentido) |
+| `estetica` | Estéticas / salones de belleza | Agendar/cancelar citas de servicios | 24 h antes (consentido) |
+| `escuela_privada` | Escuelas privadas | Agendar visitas informativas / recorridos | 24 h y 2 h antes (consentido); pago de colegiatura pendiente (fase 6) |
+| `academia_danza` | Academias de danza / baile | Agendar clases de prueba gratuitas | 24 h antes (consentido); pago de mensualidad pendiente (fase 6) |
+
+Todas fuerzan handoff a humano en temas sensibles definidos en
+`politicas.temas_sensibles` (p. ej. urgencias médicas, bullying, lesiones,
+menores sin tutor). Nuevo giro = nuevo YAML validado por
+`app/core/profile_schema.py` (ver `tests/test_templates_giros.py`).
 
 ## Día 0 — Perfil del negocio (levantamiento, 2–4 h)
 
@@ -21,7 +38,8 @@ Levantar con el cliente (dueño o encargado):
 
 ## Día 0–1 — Alta técnica (onboard, 1–2 h)
 
-- [ ] Elegir plantilla de giro en `templates/` (hoy: `consultorio_medico`).
+- [ ] Elegir plantilla de giro en `templates/` (ver tabla arriba:
+      `consultorio_medico`, `estetica`, `escuela_privada`, `academia_danza`).
 - [ ] Preparar **overrides** (JSON) con lo propio del negocio: nombre,
       precios, horarios, tono. No editar el YAML de la plantilla.
 - [ ] Alta (operador):

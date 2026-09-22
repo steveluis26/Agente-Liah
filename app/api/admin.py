@@ -15,6 +15,7 @@ sirviendo para webhook/ingesta, no para este panel.
 """
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -35,6 +36,7 @@ from app.core.config import get_settings
 from app.core.db import get_session
 from app.models import (
     ActionLog,
+    Appointment,
     Contact,
     Conversation,
     Handoff,
@@ -463,6 +465,91 @@ async def update_tenant_config(
     return _config_public(cfg, tenant)
 
 
+# ── Métricas (lente "ganar clientes", Fase 5b) ──────────────────────────
+
+
+def _is_outside_hours(local_dt: datetime, hours: dict) -> bool:
+    """True si `local_dt` (hora local del tenant, naive) cae fuera de horario.
+
+    `hours` tiene la forma validada por `_validate_business_hours`:
+    {día_en: {open, close: "HH:MM"} | "closed"}. Un día ausente se trata como
+    cerrado; un horario malformado cuenta como fuera (postura conservadora).
+    """
+    day = WEEKDAYS[local_dt.weekday()]
+    spec = hours.get(day, "closed")
+    if spec == "closed" or not isinstance(spec, dict):
+        return True
+    try:
+        open_h, open_m = (int(x) for x in spec["open"].split(":"))
+        close_h, close_m = (int(x) for x in spec["close"].split(":"))
+    except Exception:
+        return True
+    t = (local_dt.hour, local_dt.minute)
+    return t < (open_h, open_m) or t >= (close_h, close_m)
+
+
+async def _after_hours_metrics(
+    session: AsyncSession, tenant: Tenant, cutoff: datetime
+) -> dict | None:
+    """Mensajes inbound fuera de horario que recibieron respuesta (Fase 5b).
+
+    - Cohorte: mensajes `inbound` del tenant en la ventana.
+    - Fuera de horario: hora local del tenant (`Tenant.timezone`) fuera de
+      `TenantConfig.business_hours`.
+    - Atendido: existe un `outbound` del mismo contacto posterior al inbound
+      (no distingue bot vs. humano: ambos cuentan como atención).
+    - `created_at` se guarda naive (convención: UTC); se interpreta como UTC
+      antes de convertir a la zona del tenant.
+
+    Devuelve None si el tenant no tiene horarios configurados o la zona
+    horaria es inválida (el panel muestra "—" en vez de un número mentiroso).
+    """
+    cfg = (
+        await session.execute(
+            select(TenantConfig).where(TenantConfig.tenant_id == tenant.id)
+        )
+    ).scalar_one_or_none()
+    hours = (cfg.business_hours or {}) if cfg else {}
+    if not hours:
+        return None
+    try:
+        tz = ZoneInfo(tenant.timezone or "UTC")
+    except Exception:
+        return None
+
+    rows = (
+        await session.execute(
+            select(Message.contact_id, Message.direction, Message.created_at)
+            .where(
+                Message.tenant_id == tenant.id,
+                Message.created_at >= cutoff,
+            )
+            .order_by(Message.created_at.asc())
+        )
+    ).all()
+    inbound: list[tuple] = []
+    outbound_by_contact: dict = {}
+    for contact_id, direction, created_at in rows:
+        if direction == "inbound":
+            inbound.append((contact_id, created_at))
+        elif direction == "outbound":
+            outbound_by_contact.setdefault(contact_id, []).append(created_at)
+
+    outside = attended = 0
+    for contact_id, created_at in inbound:
+        local = created_at.replace(tzinfo=timezone.utc).astimezone(tz)
+        if not _is_outside_hours(local.replace(tzinfo=None), hours):
+            continue
+        outside += 1
+        if any(o > created_at for o in outbound_by_contact.get(contact_id, [])):
+            attended += 1
+    return {
+        "outside_hours": outside,
+        "attended": attended,
+        "attended_pct": round(attended / outside * 100, 1) if outside else None,
+    }
+
+
 # ── Métricas ──────────────────────────────────────────────────────────────
 
 
@@ -485,6 +572,15 @@ async def get_tenant_metrics(
     - `successful_actions`: action_log con status ok, agrupado por acción.
     - `cost`: de usage_records (agrupado por conversation_id) + agregado
       mensual de usage_monthly.
+    - `appointments_scheduled` (Fase 5b): citas creadas en la ventana,
+      excluyendo canceladas (las crea el bot vía book_appointment).
+    - `leads_captured` (Fase 5b): contactos nuevos en la ventana. El webhook
+      crea un Contact al primer mensaje de WhatsApp, así que un contacto
+      nuevo = un lead que el asistente capturó. Sin campo `created_by`: se
+      cuentan todos los contactos nuevos (nota en DECISIONES_FASE5B.md).
+    - `after_hours` (Fase 5b): inbound fuera de horario que recibió
+      respuesta; None si el tenant no tiene horarios (ver
+      `_after_hours_metrics`).
     """
     require_tenant_access(tenant_id, user)
     tenant = await session.get(Tenant, tenant_id)
@@ -606,6 +702,31 @@ async def get_tenant_metrics(
         )
     ).scalar_one_or_none()
 
+    # ── Fase 5b: lente "ganar clientes" ──────────────────────────────────
+    # Citas agendadas: creadas en la ventana, sin canceladas.
+    appointments_scheduled = (
+        await session.execute(
+            select(func.count(Appointment.id)).where(
+                Appointment.tenant_id == tenant_id,
+                Appointment.created_at >= cutoff,
+                Appointment.status != "cancelled",
+            )
+        )
+    ).scalar() or 0
+
+    # Leads capturados: contactos nuevos en la ventana.
+    leads_captured = (
+        await session.execute(
+            select(func.count(Contact.id)).where(
+                Contact.tenant_id == tenant_id,
+                Contact.created_at >= cutoff,
+            )
+        )
+    ).scalar() or 0
+
+    # Mensajes fuera de horario atendidos.
+    after_hours = await _after_hours_metrics(session, tenant, cutoff)
+
     return {
         "tenant_id": str(tenant_id),
         "days": days,
@@ -619,6 +740,9 @@ async def get_tenant_metrics(
         "avg_first_response_seconds": avg_first_response,
         "first_responses_measured": len(first_response_deltas),
         "successful_actions": successful_actions,
+        "appointments_scheduled": int(appointments_scheduled),
+        "leads_captured": int(leads_captured),
+        "after_hours": after_hours,
         "cost_usd": {
             "total_window": round(total_cost, 6),
             "tokens_in": int(usage_rows[1] or 0),

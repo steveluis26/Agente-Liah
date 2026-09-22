@@ -1,0 +1,131 @@
+# Perfil declarativo del giro: ACADEMIA DE DANZA (Fase 5b).
+#
+# Academia FICTICIA y genérica: ningún nombre, dirección o precio corresponde a
+# un negocio real. Al dar de alta un cliente real, el operador sobreescribe
+# nombre/slug/precios/horarios vía overrides (endpoint, panel o CLI).
+#
+# Rutas que cierra:
+#   1. Conocimiento: estilos, mensualidades, horarios, inscripciones (RAG).
+#   2. Acción: agendar/cancelar/reprogramar CLASES DE PRUEBA gratuitas
+#      (book_appointment con type=other; ver notas).
+#   3. Handoff: menores sin tutor, lesiones, temas sensibles -> humano.
+#   4. Recordatorio de clase de prueba 24 h antes (con consentimiento).
+#
+# NOTA SOBRE LEADS (documentada, no implementada): el motor no tiene aún una
+# herramienta de captura de leads (`build_tools()` solo expone search,
+# check_availability, book/cancel/reschedule_appointment y
+# escalate_to_human). Hoy los interesados se capturan de forma natural como
+# contactos nuevos al primer mensaje de WhatsApp, y la intención de compra se
+# materializa al agendar la clase de prueba. Una tool `register_lead` (CRM)
+# queda como desarrollo futuro; esta plantilla usa solo lo disponible.
+#
+# NOTA SOBRE MENSUALIDADES: el scheduler implementa hoy
+# `appointment_reminder`, `followup_30d` y `custom`. El recordatorio de pago
+# de mensualidad se declara como regla `custom` DESHABILITADA: pendiente de
+# implementarse en el scheduler (fase 6). No se inventa un tipo que el
+# código no entienda.
+schema_version: "1.0"
+giro: academia_danza
+slug: academia-ejemplo
+nombre: "Academia Ejemplo"
+timezone: "America/Mexico_City"
+locale: "es-MX"
+
+system_prompt: |
+  Eres Liah, la asistente virtual de Academia Ejemplo, una academia de danza.
+  Tu tono es alegre y motivador: hablas de tú, contagias energía y nunca
+  eres condescendiente. Respondes sobre estilos de baile, mensualidades,
+  horarios, edades e inscripciones usando la base de conocimiento; si no
+  sabes algo, lo dices y ofreces ayuda.
+  Puedes agendar, cancelar y reprogramar CLASES DE PRUEBA GRATUITAS
+  (una por persona y estilo) verificando disponibilidad.
+  REGLA CRÍTICA: la inscripción de menores de 18 años REQUIERE padre, madre
+  o tutor presente (no se inscribe a un menor solo por chat). Ante lesiones
+  o temas de salud, quejas sobre profesores, o si la persona pide hablar con
+  alguien, escalas INMEDIATAMENTE a un humano con escalate_to_human. El bot
+  jamás diagnostica lesiones ni recomienda tratamientos.
+
+tono: "alegre-motivador"
+
+horarios:
+  monday: {open: "16:00", close: "21:00"}
+  tuesday: {open: "16:00", close: "21:00"}
+  wednesday: {open: "16:00", close: "21:00"}
+  thursday: {open: "16:00", close: "21:00"}
+  friday: {open: "16:00", close: "21:00"}
+  saturday: {open: "09:00", close: "14:00"}
+  sunday: "closed"
+
+herramientas_habilitadas:
+  - search_knowledge_base
+  - check_availability
+  - book_appointment
+  - cancel_appointment
+  - reschedule_appointment
+  - escalate_to_human
+
+reglas:
+  - tipo: appointment_reminder
+    enabled: true
+    params:
+      hours_before: [24]
+      template_name: recordatorio_clase_prueba
+      require_consent: true
+  - tipo: custom
+    enabled: false
+    params:
+      descripcion: "Recordatorio de pago de mensualidad 5 días antes del vencimiento (pendiente de implementar en el scheduler, fase 6)"
+      days_before: 5
+      template_name: recordatorio_mensualidad
+
+plantillas_hsm:
+  - nombre: recordatorio_clase_prueba
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, te recordamos tu clase de prueba de {{2}} en {{3}} mañana a las {{4}}. Ven con ropa cómoda y 10 minutos antes. ¡Te esperamos!"
+    variables: ["nombre", "estilo", "academia", "hora"]
+  - nombre: confirmacion_clase_prueba
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, tu clase de prueba de {{2}} en {{3}} quedó agendada para el {{4}} a las {{5}}. Es gratuita y sin compromiso."
+    variables: ["nombre", "estilo", "academia", "fecha", "hora"]
+  - nombre: recordatorio_mensualidad
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, de {{2}}: te recordamos que la mensualidad de {{3}} vence el {{4}}. Puedes pagar por transferencia o en recepción."
+    variables: ["nombre", "academia", "mes", "fecha_vencimiento"]
+
+conocimiento_semilla:
+  - titulo: "Estilos, horarios y mensualidades"
+    contenido: |
+      Academia Ejemplo (precios en pesos mexicanos, IVA incluido):
+      - Ballet clásico (niñas y niños 4–12 años): lunes y miércoles 16:00–17:30, $900 MXN/mes.
+      - Hip hop (adolescentes 13–17): martes y jueves 17:30–19:00, $950 MXN/mes.
+      - Salsa y bachata (adultos): lunes y miércoles 19:00–20:30, $1,000 MXN/mes.
+      - Danza contemporánea (adultos): viernes 18:00–20:00, $800 MXN/mes.
+      - Zumba fitness (todas las edades): sábados 10:00–11:00, $700 MXN/mes.
+      La mensualidad vence el día 5 de cada mes. Descuento del 10% pagando el
+      trimestre completo por adelantado.
+  - titulo: "Clase de prueba e inscripción"
+    contenido: |
+      La primera clase de prueba es GRATUITA (una por persona y por estilo) y
+      se agenda por este chat con al menos 24 horas de anticipación; puede
+      cancelarse o reprogramarse sin costo hasta 4 horas antes.
+      Para inscribirse: llenar la ficha de inscripción, pagar la primera
+      mensualidad y firmar el reglamento. Los menores de 18 años deben venir
+      acompañados de padre, madre o tutor para la inscripción.
+  - titulo: "Ubicación y qué traer"
+    contenido: |
+      Estamos en Calle Ejemplo 78, Col. Centro (dirección de ejemplo).
+      Abrimos de lunes a viernes de 16:00 a 21:00 y sábados de 9:00 a 14:00;
+      domingos cerrado. Ven con ropa cómoda, calzado adecuado al estilo y una
+      botella de agua. Hay vestidores y lockers disponibles.
+
+politicas:
+  escalamiento: "Escalar a humano de inmediato ante: inscripción de un menor sin tutor presente, lesiones o temas de salud, quejas sobre profesores, o si la persona pide hablar con alguien. El bot jamás diagnostica lesiones ni promete lugares en grupos llenos."
+  temas_sensibles:
+    - "inscripción de menores de edad sin padre, madre o tutor"
+    - "lesiones, dolores o temas de salud"
+    - "quejas sobre profesores o clases"
+    - "la persona pide hablar con alguien"
+  consentimiento_recordatorios: true

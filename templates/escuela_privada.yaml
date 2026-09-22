@@ -1,0 +1,143 @@
+# Perfil declarativo del giro: ESCUELA PRIVADA (Fase 5b).
+#
+# Escuela FICTICIA y genérica: ningún nombre, dirección o precio corresponde a
+# un negocio real. Al dar de alta un cliente real, el operador sobreescribe
+# nombre/slug/precios/horarios vía overrides (endpoint, panel o CLI).
+#
+# Rutas que cierra:
+#   1. Conocimiento: colegiaturas, inscripciones, horarios, ubicación (RAG).
+#   2. Acción: agendar/cancelar/reprogramar VISITAS INFORMATIVAS y
+#      recorridos escolares (book_appointment con type=other; ver notas).
+#   3. Handoff: bullying, pagos vencidos o cualquier tema sensible -> humano.
+#   4. Recordatorios de visita 24 h y 2 h antes (con consentimiento).
+#
+# NOTA SOBRE LEADS (documentada, no implementada): el motor no tiene aún una
+# herramienta de captura de leads (`build_tools()` solo expone search,
+# check_availability, book/cancel/reschedule_appointment y
+# escalate_to_human). Hoy los interesados se capturan de forma natural como
+# contactos nuevos al primer mensaje de WhatsApp, y el alta de un interesado
+# se materializa al agendar una visita informativa. Una tool `register_lead`
+# (CRM) queda como desarrollo futuro; esta plantilla usa solo lo disponible.
+#
+# NOTA SOBRE COLEGIATURAS: el scheduler implementa hoy `appointment_reminder`,
+# `followup_30d` y `custom`. El recordatorio de pago de colegiatura se declara
+# como regla `custom` DESHABILITADA: pendiente de implementarse en el
+# scheduler (fase 6). No se inventa un tipo que el código no entienda.
+schema_version: "1.0"
+giro: escuela_privada
+slug: escuela-ejemplo
+nombre: "Escuela Ejemplo"
+timezone: "America/Mexico_City"
+locale: "es-MX"
+
+system_prompt: |
+  Eres Liah, la asistente virtual de Escuela Ejemplo, una escuela privada.
+  Tu tono es formal pero cordial: hablas de usted, eres clara y ordenada.
+  Respondes preguntas sobre colegiaturas, inscripciones, horarios, ubicación
+  y proceso de admisión usando la base de conocimiento; si no sabes algo,
+  lo dices y ofreces ayuda.
+  Puedes agendar, cancelar y reprogramar VISITAS INFORMATIVAS (recorridos
+  escolares para padres interesados) verificando disponibilidad.
+  REGLA CRÍTICA: ante bullying o acoso escolar, colegiaturas vencidas,
+  adeudos, quejas sobre personal o alumnos, temas disciplinarios, o si el
+  padre de familia pide hablar con alguien, escalas INMEDIATAMENTE a un
+  humano con escalate_to_human. El bot jamás opina sobre conducta de
+  alumnos, negocia adeudos ni promete descuentos.
+
+tono: "formal-cordial"
+
+horarios:
+  monday: {open: "07:00", close: "15:00"}
+  tuesday: {open: "07:00", close: "15:00"}
+  wednesday: {open: "07:00", close: "15:00"}
+  thursday: {open: "07:00", close: "15:00"}
+  friday: {open: "07:00", close: "15:00"}
+  saturday: "closed"
+  sunday: "closed"
+
+herramientas_habilitadas:
+  - search_knowledge_base
+  - check_availability
+  - book_appointment
+  - cancel_appointment
+  - reschedule_appointment
+  - escalate_to_human
+
+reglas:
+  - tipo: appointment_reminder
+    enabled: true
+    params:
+      hours_before: [24, 2]
+      template_name: recordatorio_visita
+      require_consent: true
+  - tipo: custom
+    enabled: false
+    params:
+      descripcion: "Recordatorio de pago de colegiatura 5 días antes del vencimiento (pendiente de implementar en el scheduler, fase 6)"
+      days_before: 5
+      template_name: recordatorio_colegiatura
+
+plantillas_hsm:
+  - nombre: recordatorio_visita
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, le recordamos su visita informativa a {{2}} el {{3}} a las {{4}}. Responda CONFIRMAR para confirmar o CANCELAR para liberarla."
+    variables: ["nombre_padre", "escuela", "fecha", "hora"]
+  - nombre: confirmacion_visita
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, su visita informativa a {{2}} quedó agendada para el {{3}} a las {{4}}. Llegue 10 minutos antes a recepción."
+    variables: ["nombre_padre", "escuela", "fecha", "hora"]
+  - nombre: recordatorio_colegiatura
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, de {{2}}: le recordamos que la colegiatura de {{3}} vence el {{4}}. Puede pagar por transferencia o en caja de {{5}}."
+    variables: ["nombre_padre", "escuela", "mes", "fecha_vencimiento", "horario_caja"]
+
+conocimiento_semilla:
+  - titulo: "Colegiaturas y costos (ciclo de ejemplo)"
+    contenido: |
+      Costos de Escuela Ejemplo, ciclo escolar de ejemplo (precios en pesos
+      mexicanos, IVA incluido):
+      - Inscripción anual (pago único): $8,000 MXN.
+      - Colegiatura mensual preescolar: $3,500 MXN.
+      - Colegiatura mensual primaria: $4,200 MXN.
+      - Colegiatura mensual secundaria: $4,800 MXN.
+      - Descuento del 10% por pronto pago (antes del día 5) y 5% por segundo
+        hermano inscrito. Los descuentos no son acumulables.
+      - La colegiatura vence los días 10 de cada mes; a partir del día 15 se
+        genera recargo del 5%.
+  - titulo: "Inscripciones y admisión"
+    contenido: |
+      El proceso de admisión de Escuela Ejemplo tiene 4 pasos: (1) visita
+      informativa (se agenda por este chat), (2) examen de diagnóstico del
+      alumno, (3) entrevista con los padres, (4) entrega de documentos.
+      Documentos: acta de nacimiento, CURP, boleta del ciclo anterior,
+      comprobante de domicilio e identificación oficial de ambos padres.
+      Las inscripciones para el ciclo de ejemplo abren en febrero y cierran
+      en agosto, o hasta agotar lugares (30 alumnos por grupo máximo).
+  - titulo: "Horarios y ubicación"
+    contenido: |
+      Escuela Ejemplo opera de lunes a viernes: preescolar de 8:00 a 13:00,
+      primaria de 7:30 a 14:30 y secundaria de 7:00 a 15:00 horas.
+      Sábados y domingos cerrado.
+      Ubicación: Av. Principal 456, Col. Las Flores, Veracruz, Ver.
+      (dirección de ejemplo). La oficina de admisiones atiende de lunes a
+      viernes de 8:00 a 15:00.
+  - titulo: "Visitas informativas"
+    contenido: |
+      Las visitas informativas son recorridos guiados de 45 minutos para
+      padres interesados, de lunes a viernes a las 9:00 y a las 12:00 horas.
+      Se agendan por este chat con al menos 24 horas de anticipación y pueden
+      cancelarse o reprogramarse sin costo hasta 4 horas antes. Cupo máximo:
+      3 familias por recorrido.
+
+politicas:
+  escalamiento: "Escalar a humano de inmediato ante: bullying o acoso escolar, colegiaturas vencidas o adeudos, quejas sobre personal o alumnos, temas disciplinarios, o si el padre pide hablar con una persona. El bot jamás opina sobre conducta de alumnos ni negocia pagos."
+  temas_sensibles:
+    - "bullying, acoso escolar o violencia entre alumnos"
+    - "colegiaturas vencidas, adeudos o negociación de pagos"
+    - "quejas sobre personal docente o administrativo"
+    - "temas disciplinarios o expulsiones"
+    - "el padre de familia pide hablar con una persona"
+  consentimiento_recordatorios: true
