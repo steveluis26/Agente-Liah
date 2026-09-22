@@ -125,8 +125,51 @@ exitosas, costo por conversación).
 de plataforma o la `X-Tenant-API-Key` del propio tenant (antes aceptaba
 `tenant_id` del body sin auth). Ver `docs/DECISIONES_FASE3.md`.
 
+## Alta de un cliente en 5 pasos (Fase 4)
+
+El alta es declarativa: eliges una plantilla de giro, la personalizas con
+overrides y el sistema crea todo en una transacción (tenant + API key,
+config, reglas, HSM, conocimiento semilla, tenant admin y evento de
+auditoría `tenant.onboarded`). Ver `docs/DECISIONES_FASE4.md`.
+
+```bash
+# 1. Elige/copia una plantilla (no edites el original: versiona la tuya)
+cp templates/consultorio_medico.yaml templates/mi_clinica.yaml
+
+# 2. Personaliza con overrides JSON (merge superficial; los arrays se
+#    reemplazan completos). Ej: nombre, horarios, precios, model_routing.
+cat > /tmp/overrides.json <<'EOF'
+{"nombre": "Clínica San Rafael",
+ "system_prompt": "Eres Liah, la asistente de Clínica San Rafael...",
+ "model_routing": {"llm_model": "gpt-4o"}}
+EOF
+
+# 3. Define la password del tenant admin (mínimo 12 caracteres; solo
+#    transitoria, nunca se guarda ni se devuelve)
+export LIAH_TENANT_ADMIN_PASSWORD="cambia-esta-clave-larga"
+
+# 4a. Alta por CLI…
+python scripts/onboard_tenant.py templates/mi_clinica.yaml \
+  --slug clinica-san-rafael --nombre "Clínica San Rafael" \
+  --admin-email admin@sanrafael.mx \
+  --overrides-json "$(cat /tmp/overrides.json)"
+# …o 4b. por panel: /admin/onboard (solo platform_admin)
+
+# 5. Guarda la API key (se muestra UNA sola vez) y prueba:
+#    - login del tenant admin en /admin
+#    - configura los secretos externos del tenant:
+#      OPENAI_API_KEY_TENANT_<SLUG> y WA_TOKEN_<secret_ref> (ver Fase 2)
+```
+
+Los `templates/<giro>.yaml` son la fuente de verdad versionada del giro
+(`templates/consultorio_medico.yaml` = giro objetivo comercial;
+`templates/estetica.yaml` = ejemplo mínimo del mecanismo genérico). Las HSM
+quedan registradas como pendientes de aprobación en Meta: créalas/apruébalas
+en el panel de Meta antes de activar recordatorios reales.
+
 ## Siguiente fase
 
-Fase 4: alta por perfil declarativo (`templates/<giro>.yaml` versionados +
-"nuevo cliente desde plantilla" en el panel; primera plantilla:
-`consultorio_medico`). Ver `docs/DECISIONES_FASE3.md` para el contexto.
+Fase 5: demo end-to-end del consultorio médico (conocimiento + agenda/
+cancelación/reprogramación + handoff, recordatorios 24h/2h) con instalación
+reproducible (`make up`: API + worker + migraciones desde cero). No heredar
+`scripts/legacy/demo_academia.py`: sus PASS son engañosos.

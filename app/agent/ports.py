@@ -82,7 +82,14 @@ class BookingResult(TypedDict, total=False):
     ok: bool
     event_id: str | None
     start_at: str | None  # ISO
+    cancelled_event_id: str | None  # solo reschedule: la cita que se canceló
     alternatives: list[str]  # slots libres reales si no había cupo
+    error: str | None
+
+
+class CancelResult(TypedDict, total=False):
+    ok: bool
+    event_id: str | None  # cita cancelada
     error: str | None
 
 
@@ -108,6 +115,28 @@ class CalendarPort(Protocol):
         Si `idempotency_key` ya existe en action_log, devuelve el resultado
         guardado SIN crear otra cita (reintentos seguros).
         """
+
+    async def cancel(
+        self, contact_id: str, date: str, time_slot: str
+    ) -> "CancelResult":
+        """Cancela la cita confirmada del contacto. Idempotente por naturaleza:
+        si no hay cita, devuelve ok=False sin efectos."""
+        ...
+
+    async def reschedule(
+        self,
+        contact_id: str,
+        old_date: str,
+        old_time_slot: str,
+        new_date: str,
+        new_time_slot: str,
+        appointment_type: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> "BookingResult":
+        """Cancela la cita vieja y reserva la nueva en una transacción: si el
+        nuevo slot falla, la cita original se conserva."""
+        ...
         ...
 
 

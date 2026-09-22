@@ -211,3 +211,27 @@ async def metrics_page(
         metrics=metrics,
         error=error,
     )
+
+
+@router.get("/onboard", include_in_schema=False)
+async def onboard_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Página 'Nuevo cliente' (Fase 4): alta desde plantilla de giro.
+
+    Solo platform_admin. La página lista `templates/*.yaml` vía la API JSON
+    y crea el cliente con POST /api/v1/admin/tenants/onboard (misma auth por
+    cookie). Sin lógica de negocio propia: todo pasa por el endpoint.
+    """
+    user = await _ui_user(request, session)
+    redir = _require_ui(user)
+    if redir:
+        return redir
+    if not user.is_platform_admin:
+        return _render(
+            "onboard.html",
+            **_nav_ctx(user, "onboard"),
+            error="Solo un platform_admin puede dar de alta clientes.",
+        )
+    return _render("onboard.html", **_nav_ctx(user, "onboard"), error=None)

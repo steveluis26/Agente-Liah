@@ -1,0 +1,127 @@
+# Perfil declarativo del giro: CONSULTORIO MÉDICO (Fase 4).
+#
+# Vertical objetivo del esqueleto LIAH. Clínica FICTICIA y genérica: ningún
+# nombre, dirección o precio corresponde a un negocio real. Al dar de alta un
+# cliente real, el operador sobreescribe nombre/slug/precios/horarios vía
+# overrides (endpoint, panel o CLI) sin tocar código.
+#
+# Rutas que cierra:
+#   1. Conocimiento: servicios, precios, horarios, ubicación (RAG).
+#   2. Acción: agendar / cancelar / reprogramar cita (guards anti-doble-agenda).
+#   3. Handoff: urgencias o temas sensibles -> humano (ver politicas).
+# Valor diferencial: recordatorios 24h y 2h antes (con consentimiento) para
+# reducir inasistencias.
+schema_version: "1.0"
+giro: consultorio_medico
+slug: clinica-ejemplo
+nombre: "Clínica Ejemplo Norte"
+timezone: "America/Mexico_City"
+locale: "es-MX"
+
+system_prompt: |
+  Eres Liah, la asistente virtual de Clínica Ejemplo Norte. Tu tono es
+  cálido y profesional: hablas de usted, eres clara y nunca das rodeos.
+  Respondes preguntas sobre servicios, precios, horarios y ubicación usando
+  la base de conocimiento; si no sabes algo, lo dices y ofreces ayuda.
+  Puedes agendar, cancelar y reprogramar citas verificando disponibilidad.
+  REGLA CRÍTICA: jamás das diagnósticos, interpretas síntomas ni comentas
+  resultados de estudios. Ante urgencias médicas, solicitud de diagnóstico,
+  resultados de laboratorio/imagen, recetas o cualquier tema de salud
+  sensible, escalas INMEDIATAMENTE a un humano con escalate_to_human y le
+  dices al paciente que un miembro del equipo lo atenderá a la brevedad.
+  Si hay una emergencia, indica llamar al 911.
+
+tono: "cálido-profesional"
+
+horarios:
+  monday: {open: "09:00", close: "19:00"}
+  tuesday: {open: "09:00", close: "19:00"}
+  wednesday: {open: "09:00", close: "19:00"}
+  thursday: {open: "09:00", close: "19:00"}
+  friday: {open: "09:00", close: "19:00"}
+  saturday: {open: "09:00", close: "14:00"}
+  sunday: "closed"
+
+herramientas_habilitadas:
+  - search_knowledge_base
+  - check_availability
+  - book_appointment
+  - cancel_appointment
+  - reschedule_appointment
+  - escalate_to_human
+
+reglas:
+  - tipo: appointment_reminder
+    enabled: true
+    params:
+      hours_before: [24, 2]
+      template_name: recordatorio_cita
+      require_consent: true
+  - tipo: custom
+    enabled: false
+    params:
+      descripcion: "Seguimiento post-consulta a los 7 días (pendiente de implementar en el scheduler, fase 6)"
+      days_after: 7
+      template_name: seguimiento_consulta
+
+plantillas_hsm:
+  - nombre: recordatorio_cita
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, le recordamos su cita en {{2}} el {{3}} a las {{4}}. Responda CONFIRMAR para confirmar o CANCELAR para liberarla."
+    variables: ["nombre_paciente", "clinica", "fecha", "hora"]
+  - nombre: confirmacion_cita
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, su cita en {{2}} quedó agendada para el {{3}} a las {{4}}. Si necesita cambiarla, avísenos con al menos 4 horas de anticipación."
+    variables: ["nombre_paciente", "clinica", "fecha", "hora"]
+  - nombre: aviso_cancelacion
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, su cita del {{2}} a las {{3}} en {{4}} quedó cancelada. Si desea reagendar, escríbanos."
+    variables: ["nombre_paciente", "fecha", "hora", "clinica"]
+  - nombre: seguimiento_consulta
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, de {{2}}: ¿cómo se ha sentido después de su consulta del {{3}}? Si tiene molestias, agende una revisión."
+    variables: ["nombre_paciente", "clinica", "fecha"]
+
+conocimiento_semilla:
+  - titulo: "Servicios y precios"
+    contenido: |
+      Servicios de Clínica Ejemplo Norte (precios en pesos mexicanos, IVA incluido):
+      - Consulta de medicina general: $600 MXN, duración aproximada 30 minutos.
+      - Consulta de pediatría: $700 MXN, 30 minutos.
+      - Chequeo general anual (biometría hemática, química sanguínea 12 elementos, examen general de orina y consulta): $1,200 MXN.
+      - Control de diabetes e hipertensión: $500 MXN por consulta de seguimiento.
+      - Electrocardiograma: $450 MXN, se realiza de lunes a viernes de 9:00 a 13:00.
+      - Certificado médico: $300 MXN, se entrega el mismo día con identificación oficial.
+      No se realizan cirugías ni procedimientos invasivos en esta clínica.
+  - titulo: "Horarios y ubicación"
+    contenido: |
+      Clínica Ejemplo Norte atiende de lunes a viernes de 9:00 a 19:00 horas y
+      sábados de 9:00 a 14:00 horas. Domingos cerrado.
+      Ubicación: Av. Principal 123, Col. Centro, Veracruz, Ver. (dirección de ejemplo).
+      Las citas se agendan por este chat; el tiempo de espera promedio con cita es menor a 15 minutos.
+      Sin cita se atiende por orden de llegada sujeto a disponibilidad.
+  - titulo: "Política de cancelación y reprogramación"
+    contenido: |
+      Las citas pueden cancelarse o reprogramarse sin costo avisando con al menos
+      4 horas de anticipación por este chat. Si el paciente no se presenta ni avisa,
+      la siguiente cita requiere un anticipo del 50%. Los recordatorios se envían
+      24 horas y 2 horas antes de la cita solo a pacientes que dieron su consentimiento.
+  - titulo: "Primera visita: qué traer"
+    contenido: |
+      En su primera visita traiga identificación oficial, estudios o recetas previas
+      si los tiene, y la lista de medicamentos que toma actualmente. Llegue 10 minutos
+      antes para el registro. Los menores de edad deben venir acompañados de un adulto.
+
+politicas:
+  escalamiento: "Escalar a humano de inmediato ante: urgencias médicas, solicitud de diagnóstico, resultados de estudios, recetas, o si el paciente pide hablar con una persona. El bot jamás opina sobre salud."
+  temas_sensibles:
+    - "urgencias médicas o emergencias"
+    - "diagnósticos o interpretación de síntomas"
+    - "resultados de estudios de laboratorio o imagen"
+    - "recetas, dosis o medicamentos"
+    - "el paciente pide hablar con una persona"
+  consentimiento_recordatorios: true

@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.ports import AvailabilityResult, BookingResult
+from app.agent.ports import AvailabilityResult, BookingResult, CancelResult
 from app.models import ActionLog, Appointment
 
 DEFAULT_TZ = "America/Mexico_City"
@@ -202,6 +202,141 @@ class MemoryCalendarAdapter:
         await self.session.commit()
         return result
 
+    async def cancel(
+        self, contact_id: str, date: str, time_slot: str
+    ) -> CancelResult:
+        """Cancela la cita confirmada del contacto en fecha/hora dadas.
+
+        Marca `status="cancelled"` (no borra: queda rastro auditable).
+        """
+        try:
+            start_at = self._parse_start(date, time_slot)
+        except ValueError:
+            return {"ok": False, "event_id": None,
+                    "error": "formato inválido: usa YYYY-MM-DD y HH:MM"}
+        appt = (
+            await self.session.execute(
+                select(Appointment).where(
+                    Appointment.tenant_id == self.tenant_id,
+                    Appointment.contact_id == uuid.UUID(contact_id),
+                    Appointment.start_at == start_at,
+                    Appointment.status == "confirmed",
+                )
+            )
+        ).scalar_one_or_none()
+        if appt is None:
+            return {
+                "ok": False,
+                "event_id": None,
+                "error": "no hay cita confirmada en ese horario",
+            }
+        appt.status = "cancelled"
+        await self.session.commit()
+        return {"ok": True, "event_id": str(appt.id), "error": None}
+
+    async def reschedule(
+        self,
+        contact_id: str,
+        old_date: str,
+        old_time_slot: str,
+        new_date: str,
+        new_time_slot: str,
+        appointment_type: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> BookingResult:
+        """Reprograma atómicamente: cancela la cita vieja y reserva la nueva.
+
+        Si el nuevo slot está ocupado (o el formato es inválido), la cita
+        original se conserva: el rollback revierte también la cancelación.
+        """
+        if idempotency_key:
+            prev = await self.session.execute(
+                select(ActionLog).where(
+                    ActionLog.idempotency_key == idempotency_key
+                )
+            )
+            prev = prev.scalar_one_or_none()
+            if prev is not None:
+                res = dict(prev.result or {})
+                res["ok"] = prev.status == "ok"
+                return res  # type: ignore[return-value]
+
+        try:
+            old_start = self._parse_start(old_date, old_time_slot)
+            new_start = self._parse_start(new_date, new_time_slot)
+        except ValueError:
+            return {"ok": False, "event_id": None, "start_at": None,
+                    "error": "formato inválido: usa YYYY-MM-DD y HH:MM"}
+
+        appt = (
+            await self.session.execute(
+                select(Appointment).where(
+                    Appointment.tenant_id == self.tenant_id,
+                    Appointment.contact_id == uuid.UUID(contact_id),
+                    Appointment.start_at == old_start,
+                    Appointment.status == "confirmed",
+                )
+            )
+        ).scalar_one_or_none()
+        if appt is None:
+            return {
+                "ok": False,
+                "event_id": None,
+                "start_at": None,
+                "error": "no hay cita confirmada en el horario original",
+            }
+
+        # Cancelación sin commit: viaja en la misma transacción que el book.
+        # Si el book falla (slot ocupado), el rollback restaura la cita vieja.
+        old_event_id = str(appt.id)
+        appt.status = "cancelled"
+        await self.session.flush()
+
+        new_appt = Appointment(
+            tenant_id=self.tenant_id,
+            contact_id=uuid.UUID(contact_id),
+            type=appointment_type,
+            start_at=new_start,
+            status="confirmed",
+        )
+        self.session.add(new_appt)
+        try:
+            await self.session.flush()
+        except IntegrityError:
+            await self.session.rollback()
+            taken = await self._taken_slots()
+            return {
+                "ok": False,
+                "event_id": None,
+                "start_at": None,
+                "error": "nuevo slot ocupado (la cita original se conserva)",
+                "alternatives": self._free_alternatives(
+                    new_date, new_start.strftime("%H:%M"), taken
+                ),
+            }
+
+        result: BookingResult = {
+            "ok": True,
+            "event_id": str(new_appt.id),
+            "start_at": new_start.isoformat(),
+            "cancelled_event_id": old_event_id,
+            "error": None,
+        }
+        if idempotency_key:
+            self.session.add(
+                ActionLog(
+                    tenant_id=self.tenant_id,
+                    contact_id=uuid.UUID(contact_id),
+                    action="reschedule_appointment",
+                    idempotency_key=idempotency_key,
+                    status="ok",
+                    result=dict(result),
+                )
+            )
+        await self.session.commit()
+        return result
+
 
 class CalComAdapter:
     """Stub para la API real de Cal.com.
@@ -231,4 +366,26 @@ class CalComAdapter:
     ) -> BookingResult:
         raise NotImplementedError(
             "CalComAdapter.book: implementar contra POST /v1/bookings"
+        )
+
+    async def cancel(
+        self, contact_id: str, date: str, time_slot: str
+    ) -> CancelResult:
+        raise NotImplementedError(
+            "CalComAdapter.cancel: implementar contra DELETE /v1/bookings"
+        )
+
+    async def reschedule(
+        self,
+        contact_id: str,
+        old_date: str,
+        old_time_slot: str,
+        new_date: str,
+        new_time_slot: str,
+        appointment_type: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> BookingResult:
+        raise NotImplementedError(
+            "CalComAdapter.reschedule: implementar contra PATCH /v1/bookings"
         )

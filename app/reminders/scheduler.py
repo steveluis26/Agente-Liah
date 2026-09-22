@@ -19,7 +19,9 @@ from app.reminders import dispatch
 
 logger = logging.getLogger("reminders.scheduler")
 
-RULE_TYPES = ["trial_class", "colegiatura", "followup_30d"]
+RULE_TYPES = ["appointment_reminder", "followup_30d", "trial_class", "colegiatura"]
+# `appointment_reminder` y `followup_30d` son los tipos genéricos (Fase 4);
+# `trial_class`/`colegiatura` son legacy de la Fase 0 (compatibilidad).
 
 
 async def run_once(dry_run: bool = False):
@@ -43,20 +45,20 @@ async def run_once(dry_run: bool = False):
                 targets = await dispatch.load_rule_targets(
                     session, tenant.id, tenant.name, rule.type, now
                 )
-                for (r, contact, scheduled_for, variables) in targets:
+                for (r, contact, scheduled_for, variables, appointment_id) in targets:
                     # la plantilla se resuelve por nombre esperado de la regla
                     template = (
                         await session.execute(
                             select(Template).where(
                                 Template.tenant_id == tenant.id,
-                                Template.name == _template_name_for(rule.type),
+                                Template.name == _template_name_for(r),
                             )
                         )
                     ).scalar_one_or_none()
                     if template is None:
                         logger.warning(
                             "Sin plantilla '%s' para tenant %s",
-                            _template_name_for(rule.type),
+                            _template_name_for(r),
                             tenant.id,
                         )
                         continue
@@ -70,17 +72,28 @@ async def run_once(dry_run: bool = False):
                         scheduled_for,
                         variables,
                         dry_run=dry_run,
+                        appointment_id=appointment_id,
                     )
                 rule.last_run_at = now
                 session.add(rule)
             await session.commit()
 
 
-def _template_name_for(rule_type: str) -> str:
+def _template_name_for(rule) -> str:
+    """Nombre de la plantilla HSM para una regla.
+
+    Primero `params.template_name` (perfiles declarativos, Fase 4); si no,
+    el mapa legacy por tipo de regla.
+    """
+    params = getattr(rule, "params", None) or {}
+    if params.get("template_name"):
+        return params["template_name"]
+    rule_type = getattr(rule, "type", "")
     return {
         "trial_class": "recordatorio_clase_muestra",
         "colegiatura": "aviso_colegiatura",
         "followup_30d": "seguimiento_consulta",
+        "appointment_reminder": "recordatorio_generico",
     }.get(rule_type, "recordatorio_generico")
 
 

@@ -26,8 +26,14 @@ from app.models.conversations import MODE_HUMAN, set_conversation_mode
 
 
 class AppointmentType(str, Enum):
-    trial_class = "trial_class"
+    """Tipos de cita genéricos (sin literales de ningún vertical).
+
+    Fase 4: se eliminó `trial_class` (herencia del demo de academia de danza).
+    Los tipos específicos de cada negocio viajan en el perfil del tenant, no
+    en el enum del motor.
+    """
     consultation = "consultation"
+    followup = "followup"
     other = "other"
 
 
@@ -66,6 +72,28 @@ class BookAppointmentArgs(CheckAvailabilityArgs):
 
 class EscalateArgs(BaseModel):
     reason: str = ""
+
+
+class RescheduleAppointmentArgs(BaseModel):
+    old_date: str
+    old_time_slot: str
+    new_date: str
+    new_time_slot: str
+    type: AppointmentType = AppointmentType.other
+
+    @field_validator("old_date", "new_date")
+    @classmethod
+    def _valid_date(cls, v: str) -> str:
+        if not _DATE_RE.match(v):
+            raise ValueError("la fecha debe ser YYYY-MM-DD")
+        return v
+
+    @field_validator("old_time_slot", "new_time_slot")
+    @classmethod
+    def _valid_slot(cls, v: str) -> str:
+        if not _SLOT_RE.match(v):
+            raise ValueError("el horario debe ser HH:MM o HH:MM-HH:MM")
+        return v
 
 
 # ── Definiciones (formato OpenAI tools) ──────────────
@@ -122,10 +150,50 @@ def build_tools(enabled: list[str] | set[str] | None = None) -> list[dict]:
                         "time_slot": {"type": "string",
                                       "description": "Hora HH:MM."},
                         "type": {"type": "string",
-                                 "description": "Tipo: trial_class | consultation | other.",
-                                 "enum": ["trial_class", "consultation", "other"]},
+                                 "description": "Tipo: consultation | followup | other.",
+                                 "enum": ["consultation", "followup", "other"]},
                     },
                     "required": ["date", "time_slot", "type"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "cancel_appointment",
+                "description": "Cancela la cita confirmada del contacto actual en "
+                               "una fecha y hora. No acepta contact_id: siempre "
+                               "cancela la cita de quien escribe.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string", "description": "Fecha YYYY-MM-DD."},
+                        "time_slot": {"type": "string",
+                                      "description": "Hora HH:MM."},
+                    },
+                    "required": ["date", "time_slot"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "reschedule_appointment",
+                "description": "Reprograma una cita del contacto actual: cancela la "
+                               "cita vieja y reserva el nuevo horario en una sola "
+                               "operación atómica. No acepta contact_id.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "old_date": {"type": "string", "description": "Fecha actual YYYY-MM-DD."},
+                        "old_time_slot": {"type": "string", "description": "Hora actual HH:MM."},
+                        "new_date": {"type": "string", "description": "Nueva fecha YYYY-MM-DD."},
+                        "new_time_slot": {"type": "string", "description": "Nueva hora HH:MM."},
+                        "type": {"type": "string",
+                                 "description": "Tipo: consultation | followup | other.",
+                                 "enum": ["consultation", "followup", "other"]},
+                    },
+                    "required": ["old_date", "old_time_slot", "new_date", "new_time_slot"],
                 },
             },
         },
@@ -200,6 +268,35 @@ async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
             str(ctx.contact_id),
             parsed["date"],
             parsed["time_slot"],
+            parsed["type"].value,
+            idempotency_key=args.get("idempotency_key"),
+        )
+
+    if name == "cancel_appointment":
+        parsed = _validation_error(CheckAvailabilityArgs, args)
+        if "_error" in parsed:
+            return {"ok": False, "event_id": None, "error": parsed["_error"]}
+        cal = calmod.MemoryCalendarAdapter(
+            ctx.session, ctx.tenant_id, tz=ctx.timezone
+        )
+        return await cal.cancel(
+            str(ctx.contact_id), parsed["date"], parsed["time_slot"]
+        )
+
+    if name == "reschedule_appointment":
+        parsed = _validation_error(RescheduleAppointmentArgs, args)
+        if "_error" in parsed:
+            return {"ok": False, "event_id": None, "start_at": None,
+                    "error": parsed["_error"]}
+        cal = calmod.MemoryCalendarAdapter(
+            ctx.session, ctx.tenant_id, tz=ctx.timezone
+        )
+        return await cal.reschedule(
+            str(ctx.contact_id),
+            parsed["old_date"],
+            parsed["old_time_slot"],
+            parsed["new_date"],
+            parsed["new_time_slot"],
             parsed["type"].value,
             idempotency_key=args.get("idempotency_key"),
         )

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Nuevo cliente · Panel Liah{% endblock %}
+{% block content %}
+<h2>Nuevo cliente desde plantilla</h2>
+<p class="muted">Alta por perfil declarativo (Fase 4): elige el giro, personaliza y crea.
+Se genera el tenant, su config, reglas, plantillas HSM, conocimiento semilla y el
+<code>tenant_admin</code> del panel. Todo en una transacción.</p>
+
+{% if error %}
+<div class="error">{{ error }}</div>
+{% endif %}
+
+<div class="card">
+  <div class="row">
+    <div style="flex:1;min-width:220px">
+      <label for="template">Giro (plantilla)</label>
+      <select id="template" class="wide" style="width:100%"></select>
+    </div>
+    <div style="flex:1;min-width:220px">
+      <label for="slug">Slug del tenant</label>
+      <input type="text" id="slug" class="wide" style="width:100%" placeholder="clinica-norte" autocomplete="off">
+    </div>
+  </div>
+  <div class="row">
+    <div style="flex:1;min-width:220px">
+      <label for="nombre">Nombre comercial (opcional: usa el de la plantilla)</label>
+      <input type="text" id="nombre" class="wide" style="width:100%" placeholder="">
+    </div>
+    <div style="flex:1;min-width:220px">
+      <label for="admin_email">Email del tenant_admin</label>
+      <input type="email" id="admin_email" class="wide" style="width:100%" placeholder="admin@clinica.mx" autocomplete="off">
+    </div>
+  </div>
+  <label for="admin_password">Password del tenant_admin (mínimo 12 caracteres, no se guarda en claro)</label>
+  <input type="password" id="admin_password" class="wide" style="width:100%" autocomplete="new-password">
+  <label for="overrides">Overrides del perfil (JSON, opcional — ej. <span class="mono">{"tono": "formal"}</span>)</label>
+  <textarea id="overrides" class="code" placeholder='{"tono": "formal", "horarios": {"sunday": {"open": "09:00", "close": "13:00"}}}'></textarea>
+  <div class="row" style="margin-top:.8rem">
+    <button class="btn" id="btn-create" onclick="onboard()">Crear cliente</button>
+    <span class="muted" id="tpl-summary"></span>
+  </div>
+</div>
+
+<div class="card" id="result-card" style="display:none">
+  <h3>Cliente creado</h3>
+  <div id="result"></div>
+</div>
+
+<script>
+let TEMPLATES = [];
+async function loadTemplates(){
+  TEMPLATES = await api('/api/v1/admin/templates');
+  const sel = document.getElementById('template');
+  sel.innerHTML = '';
+  for (const t of TEMPLATES){
+    const opt = document.createElement('option');
+    opt.value = t.template || '';
+    opt.textContent = t.error
+      ? `${t.template} — ERROR: ${t.error}`
+      : `${t.nombre} (${t.giro})`;
+    opt.disabled = !!t.error;
+    sel.appendChild(opt);
+  }
+  sel.onchange = showSummary;
+  showSummary();
+}
+function showSummary(){
+  const t = TEMPLATES.find(x => x.template === document.getElementById('template').value);
+  const el = document.getElementById('tpl-summary');
+  if (!t || t.error){ el.textContent = ''; return; }
+  el.textContent = `${t.reglas} reglas · ${t.plantillas} plantillas HSM · ` +
+    `${t.conocimiento_items} docs semilla · tools: ${t.herramientas.join(', ')}`;
+  if (!document.getElementById('slug').value && t.slug_default)
+    document.getElementById('slug').value = t.slug_default;
+}
+async function onboard(){
+  const btn = document.getElementById('btn-create');
+  btn.disabled = true;
+  try {
+    let overrides = {};
+    const raw = document.getElementById('overrides').value.trim();
+    if (raw) overrides = JSON.parse(raw);
+    const body = {
+      template: document.getElementById('template').value,
+      slug: document.getElementById('slug').value.trim(),
+      nombre: document.getElementById('nombre').value.trim() || null,
+      overrides,
+      admin_email: document.getElementById('admin_email').value.trim(),
+      admin_password: document.getElementById('admin_password').value,
+    };
+    const data = await api('/api/v1/admin/tenants/onboard', 'POST', body);
+    document.getElementById('admin_password').value = '';
+    const card = document.getElementById('result-card');
+    card.style.display = 'block';
+    document.getElementById('result').innerHTML =
+      `<p><b>${data.nombre}</b> (<span class="mono">${data.slug}</span>) — giro ${data.giro}</p>` +
+      `<p class="muted">Reglas: ${data.summary.reglas} · Plantillas HSM: ${data.summary.plantillas_hsm} · ` +
+      `Docs semilla: ${data.summary.conocimiento_items} · Admin: ${data.admin_email}</p>` +
+      `<p><b>API key (se muestra UNA vez, guárdala ahora):</b><br>` +
+      `<span class="mono" style="user-select:all">${data.api_key}</span></p>`;
+    toast('Cliente creado');
+  } catch(e){ toast('Error: ' + e.message, false); }
+  finally { btn.disabled = false; }
+}
+loadTemplates().catch(e => toast('Error: ' + e.message, false));
+</script>
+{% endblock %}

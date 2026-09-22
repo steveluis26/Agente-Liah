@@ -81,13 +81,27 @@ async def ingest_knowledge(
     embedder: EmbedderPort,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
+    *,
+    commit: bool = True,
 ) -> uuid.UUID:
     """Ingestiona texto: crea source, splitea, embeddea e inserta por lotes.
 
     Commits parciales por lote (no una sola transacción gigante). Si un lote
     falla, la fuente queda en `status="failed"` y se relanza la excepción.
+
+    `commit=False` (Fase 4, onboarding): solo hace flush; el llamador decide
+    el commit. Así el alta completa del tenant es UNA transacción: si algo
+    falla, el rollback revierte también el conocimiento. Con `commit=False`
+    el contenido vacío lanza ValueError (un item de conocimiento inválido no
+    debe crear ni la fuente).
     """
     _check_dimension(embedder)
+    chunks = split_text(content, chunk_size, overlap)
+    if not chunks:
+        raise ValueError(
+            f"conocimiento inválido: {title!r} no produjo ningún chunk "
+            "(contenido vacío o solo espacios)"
+        )
     source = KnowledgeSource(
         tenant_id=tenant_id,
         type="text",
@@ -95,11 +109,13 @@ async def ingest_knowledge(
         status="pending",
     )
     session.add(source)
-    await session.commit()  # la fuente existe aunque los lotes fallen
+    if commit:
+        await session.commit()  # la fuente existe aunque los lotes fallen
+    else:
+        await session.flush()
     source_id = source.id
 
     try:
-        chunks = split_text(content, chunk_size, overlap)
         for batch_start in range(0, len(chunks), INGEST_BATCH_SIZE):
             batch = chunks[batch_start:batch_start + INGEST_BATCH_SIZE]
             vectors = await embedder.embed_batch(batch)
@@ -118,18 +134,25 @@ async def ingest_knowledge(
                         embedding=vec,
                     )
                 )
-            # Commit parcial por lote: progreso durable, no transacción gigante.
-            await session.commit()
+            if commit:
+                # Commit parcial por lote: progreso durable, no transacción gigante.
+                await session.commit()
+            else:
+                await session.flush()
         source.status = "ready"
-        await session.commit()
-    except Exception:
-        # La sesión puede estar en estado fallido tras un error SQL:
-        # rollback antes de marcar la fuente.
-        await session.rollback()
-        src = await session.get(KnowledgeSource, source_id)
-        if src is not None:
-            src.status = "failed"
+        if commit:
             await session.commit()
+        else:
+            await session.flush()
+    except Exception:
+        if commit:
+            # La sesión puede estar en estado fallido tras un error SQL:
+            # rollback antes de marcar la fuente.
+            await session.rollback()
+            src = await session.get(KnowledgeSource, source_id)
+            if src is not None:
+                src.status = "failed"
+                await session.commit()
         raise
     return source_id
 

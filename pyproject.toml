@@ -24,6 +24,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     # Panel mínimo Fase 3: UI server-rendered (Jinja2, sin build step).
     "jinja2>=3.1",
+    # Alta por perfil declarativo Fase 4: plantillas en templates/*.yaml.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

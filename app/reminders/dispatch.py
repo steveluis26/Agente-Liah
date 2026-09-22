@@ -7,7 +7,7 @@ Responsabilidades:
 - Arma las variables del template desde la BD (fuente de verdad).
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,16 +33,26 @@ async def _already_sent(
     rule_id: uuid.UUID,
     contact_id: uuid.UUID,
     scheduled_for: datetime,
+    appointment_id: uuid.UUID | None = None,
 ) -> bool:
-    existing = await session.execute(
-        select(ReminderLog).where(
-            ReminderLog.tenant_id == tenant_id,
-            ReminderLog.rule_id == rule_id,
-            ReminderLog.contact_id == contact_id,
-            ReminderLog.scheduled_for == scheduled_for,
-            ReminderLog.status.in_(["pending", "sent"]),
-        )
+    """Idempotencia por (rule, contact, appointment, scheduled_for).
+
+    `appointment_id=None` conserva el comportamiento legacy (reglas no
+    asociadas a una cita). Con cita, dos citas del mismo contacto que
+    calculen el mismo `scheduled_for` no se pisan (Fase 4).
+    """
+    stmt = select(ReminderLog).where(
+        ReminderLog.tenant_id == tenant_id,
+        ReminderLog.rule_id == rule_id,
+        ReminderLog.contact_id == contact_id,
+        ReminderLog.scheduled_for == scheduled_for,
+        ReminderLog.status.in_(["pending", "sent"]),
     )
+    if appointment_id is None:
+        stmt = stmt.where(ReminderLog.appointment_id.is_(None))
+    else:
+        stmt = stmt.where(ReminderLog.appointment_id == appointment_id)
+    existing = await session.execute(stmt)
     return existing.scalar_one_or_none() is not None
 
 
@@ -62,6 +72,7 @@ async def dispatch_reminder(
     scheduled_for: datetime,
     variables: list[str],
     dry_run: bool = False,
+    appointment_id: uuid.UUID | None = None,
 ) -> bool:
     """Envía (o registra) un recordatorio HSM para un contacto.
 
@@ -74,7 +85,9 @@ async def dispatch_reminder(
     # sola vez a la entrada para no mezclar aware/naive en queries ni logs.
     if scheduled_for.tzinfo is not None:
         scheduled_for = scheduled_for.astimezone(timezone.utc).replace(tzinfo=None)
-    if await _already_sent(session, tenant_id, rule.id, contact.id, scheduled_for):
+    if await _already_sent(
+        session, tenant_id, rule.id, contact.id, scheduled_for, appointment_id
+    ):
         return False
 
     components = _build_components(template, variables)
@@ -84,6 +97,7 @@ async def dispatch_reminder(
         rule_id=rule.id,
         contact_id=contact.id,
         template_id=template.id,
+        appointment_id=appointment_id,
         scheduled_for=scheduled_for,
         status="pending",
     )
@@ -124,9 +138,12 @@ async def load_rule_targets(
     rule_type: str,
     now: datetime,
 ):
-    """Resuelve (contact, scheduled_for, variables) según el tipo de regla.
+    """Resuelve (rule, contact, scheduled_for, variables, appointment_id) según
+    el tipo de regla.
 
     Fuente de verdad = appointments/contacts. No inventa fechas.
+    `appointment_id` es el id de la cita origen (None en reglas que no son
+    por cita); viaja hasta reminder_log para una idempotencia correcta.
     """
     targets = []
     rule = (
@@ -141,7 +158,10 @@ async def load_rule_targets(
 
     for r in rule:
         if rule_type == "trial_class":
-            # recordatorio el día anterior a una clase muestra confirmada
+            # LEGACY (Fase 0, demo de academia): recordatorio el día anterior
+            # a una cita confirmada de este tipo. Se conserva por
+            # compatibilidad con tenants creados antes de la Fase 4; los
+            # perfiles nuevos usan `appointment_reminder`.
             rows = await session.execute(
                 select(Appointment, Contact).join(
                     Contact, Contact.id == Appointment.contact_id
@@ -155,13 +175,50 @@ async def load_rule_targets(
                 scheduled_for = appt.start_at
                 target_date = scheduled_for.date()
                 if (target_date - now.date()).days == 1:
+                    # El nombre del servicio sale de los params de la regla
+                    # (antes estaba hardcodeado: deuda del demo extraída en
+                    # Fase 4; ver docs/DECISIONES_FASE4.md).
+                    servicio = r.params.get("servicio") or appt.type
                     vars_ = [
                         contact.name or "Hola",
                         tenant_name,
                         appt.start_at.strftime("%H:%M"),
-                        "ballet",
+                        servicio,
                     ]
-                    targets.append((r, contact, scheduled_for, vars_))
+                    targets.append((r, contact, scheduled_for, vars_, appt.id))
+        elif rule_type == "appointment_reminder":
+            # Genérico (Fase 4): recordatorio N horas antes de cualquier cita
+            # confirmada. params: {hours_before: [24, 2],
+            # template_name: "recordatorio_cita", require_consent: true}.
+            # `scheduled_for` = inicio_de_cita - h: cada h tiene su propio
+            # scheduled_for, así el recordatorio de 24h no pisa al de 2h en
+            # la idempotencia de reminder_log. El gate de consentimiento lo
+            # aplica dispatch_reminder (LFPDPPP, siempre).
+            hours = r.params.get("hours_before") or [24]
+            rows = await session.execute(
+                select(Appointment, Contact).join(
+                    Contact, Contact.id == Appointment.contact_id
+                ).where(
+                    Appointment.tenant_id == tenant_id,
+                    Appointment.status == "confirmed",
+                )
+            )
+            for appt, contact in rows.all():
+                delta_h = (appt.start_at - now).total_seconds() / 3600
+                if delta_h <= 0:
+                    continue
+                for h in hours:
+                    scheduled_for = appt.start_at - timedelta(hours=float(h))
+                    if now >= scheduled_for:
+                        vars_ = [
+                            contact.name or "Hola",
+                            tenant_name,
+                            appt.start_at.strftime("%d/%m/%Y"),
+                            appt.start_at.strftime("%H:%M"),
+                        ]
+                        targets.append(
+                            (r, contact, scheduled_for, vars_, appt.id)
+                        )
         elif rule_type == "colegiatura":
             # días 1-10 del mes en curso: avisa a todos los contactos del tenant
             if 1 <= now.day <= 10:
@@ -172,7 +229,7 @@ async def load_rule_targets(
                 ).scalars().all()
                 for contact in contacts:
                     vars_ = [contact.name or "Hola", tenant_name, "10"]
-                    targets.append((r, contact, now, vars_))
+                    targets.append((r, contact, now, vars_, None))
         elif rule_type == "followup_30d":
             # 30 días tras última interacción/consulta
             rows = await session.execute(
@@ -187,5 +244,5 @@ async def load_rule_targets(
             for appt, contact in rows.all():
                 if (now - appt.start_at).days >= 30:
                     vars_ = [contact.name or "Hola", tenant_name]
-                    targets.append((r, contact, now, vars_))
+                    targets.append((r, contact, now, vars_, appt.id))
     return targets

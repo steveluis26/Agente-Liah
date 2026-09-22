@@ -172,7 +172,7 @@ async def test_load_targets_trial_class_day_before():
             s, tid, "Academia Demo", "trial_class", datetime.utcnow()
         )
         assert len(targets) == 1
-        (r, c, scheduled_for, vars_) = targets[0]
+        (r, c, scheduled_for, vars_, _appt_id) = targets[0]
         assert c.id == contact.id
         assert vars_[0] == "Sofia"
 

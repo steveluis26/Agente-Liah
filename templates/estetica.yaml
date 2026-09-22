@@ -1,0 +1,81 @@
+# Perfil declarativo del giro: ESTÉTICA / SALÓN (Fase 4).
+#
+# Segunda plantilla de ejemplo: demuestra que el mecanismo de alta por perfil
+# es genérico (no está atado al consultorio médico). Negocio ficticio.
+schema_version: "1.0"
+giro: estetica
+slug: estetica-ejemplo
+nombre: "Estética Ejemplo"
+timezone: "America/Mexico_City"
+locale: "es-MX"
+
+system_prompt: |
+  Eres Liah, la asistente virtual de Estética Ejemplo. Tu tono es amable y
+  cercano. Respondes sobre servicios, precios y horarios con la base de
+  conocimiento, y agendas, cancelas o reprogramas citas verificando
+  disponibilidad. Si la clienta pide algo que no ofreces o quiere hablar con
+  una persona, escalas a un humano con escalate_to_human.
+
+tono: "amable-cercano"
+
+horarios:
+  monday: "closed"
+  tuesday: {open: "10:00", close: "20:00"}
+  wednesday: {open: "10:00", close: "20:00"}
+  thursday: {open: "10:00", close: "20:00"}
+  friday: {open: "10:00", close: "20:00"}
+  saturday: {open: "09:00", close: "18:00"}
+  sunday: "closed"
+
+herramientas_habilitadas:
+  - search_knowledge_base
+  - check_availability
+  - book_appointment
+  - cancel_appointment
+  - escalate_to_human
+
+reglas:
+  - tipo: appointment_reminder
+    enabled: true
+    params:
+      hours_before: [24]
+      template_name: recordatorio_cita
+      require_consent: true
+
+plantillas_hsm:
+  - nombre: recordatorio_cita
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, te recordamos tu cita en {{2}} el {{3}} a las {{4}}. ¡Te esperamos!"
+    variables: ["nombre", "estetica", "fecha", "hora"]
+  - nombre: confirmacion_cita
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, tu cita en {{2}} quedó agendada para el {{3}} a las {{4}}."
+    variables: ["nombre", "estetica", "fecha", "hora"]
+
+conocimiento_semilla:
+  - titulo: "Servicios y precios"
+    contenido: |
+      Servicios de Estética Ejemplo (pesos mexicanos):
+      - Corte de cabello: $250 MXN.
+      - Tinte completo: desde $800 MXN según largo.
+      - Manicure: $300 MXN. Pedicure: $350 MXN.
+      - Facial hidratante: $600 MXN, 50 minutos.
+      Los precios incluyen productos; el pago es en efectivo o transferencia.
+  - titulo: "Horarios y ubicación"
+    contenido: |
+      Abrimos de martes a viernes de 10:00 a 20:00 y sábados de 9:00 a 18:00.
+      Lunes y domingos cerrado. Estamos en Calle Ejemplo 45, Col. Centro
+      (dirección de ejemplo). Se recomienda llegar 5 minutos antes de la cita.
+  - titulo: "Cancelaciones"
+    contenido: |
+      Puedes cancelar o reprogramar tu cita sin costo hasta 3 horas antes por
+      este chat. Pasado ese tiempo se cobra el 50% del servicio.
+
+politicas:
+  escalamiento: "Escalar a humano si la clienta pide hablar con una persona o solicita un servicio que no está en el catálogo."
+  temas_sensibles:
+    - "la clienta pide hablar con una persona"
+    - "reclamaciones sobre un servicio realizado"
+  consentimiento_recordatorios: true

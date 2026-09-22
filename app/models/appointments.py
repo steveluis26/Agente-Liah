@@ -22,7 +22,7 @@ class Appointment(Base, TenantMixin):
     contact_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False
     )
-    type: Mapped[str] = mapped_column(String(40), nullable=False)  # trial_class|consultation
+    type: Mapped[str] = mapped_column(String(40), nullable=False)  # consultation|followup|other (genérico; el vertical va en el perfil del tenant)
     calendar_id: Mapped[str | None] = mapped_column(String(80))
     external_event_id: Mapped[str | None] = mapped_column(String(120))
     start_at: Mapped[datetime] = mapped_column(nullable=False)

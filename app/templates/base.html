@@ -61,6 +61,9 @@
     <a href="/admin/handoffs" class="{% if active=='handoffs' %}active{% endif %}">Bandeja</a>
     <a href="/admin/config" class="{% if active=='config' %}active{% endif %}">Config</a>
     <a href="/admin/metrics" class="{% if active=='metrics' %}active{% endif %}">Métricas</a>
+    {% if is_platform_admin %}
+    <a href="/admin/onboard" class="{% if active=='onboard' %}active{% endif %}">Nuevo cliente</a>
+    {% endif %}
   </nav>
   <span class="who">
     <span>{{ user_email }} · {{ user_role }}</span>

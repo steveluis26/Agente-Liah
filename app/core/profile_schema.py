@@ -1,0 +1,236 @@
+"""Schema del perfil declarativo de giro (Fase 4).
+
+Un "perfil" es el YAML versionado en `templates/<giro>.yaml`: todo lo que
+define a un cliente (giro, tono, horarios, herramientas, reglas, plantillas
+HSM, conocimiento semilla, políticas) SIN tocar código.
+
+Validación estricta (`extra="forbid"` en todos los modelos): una clave
+desconocida es error, no se guarda en silencio. `load_template()` lee y
+valida un YAML; `list_templates()` enumera los giros disponibles para el
+panel/CLI.
+"""
+import re
+from pathlib import Path
+from typing import Any, Literal
+from zoneinfo import ZoneInfo
+
+import yaml
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+SCHEMA_VERSION = "1.0"
+
+# Raíz del repo = dos niveles arriba de app/core/.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+TEMPLATES_DIR = REPO_ROOT / "templates"
+
+_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _tool_names() -> list[str]:
+    """Nombres de herramientas reales del motor (app/agent/tools.py)."""
+    from app.agent.tools import build_tools
+
+    return [t["function"]["name"] for t in build_tools()]
+
+
+class _Strict(BaseModel):
+    model_config = {"extra": "forbid"}
+
+
+class ConocimientoItem(_Strict):
+    """Un documento semilla de la base de conocimiento del negocio."""
+
+    titulo: str = Field(min_length=3, max_length=200)
+    contenido: str = Field(min_length=10)
+
+
+class PlantillaHSM(_Strict):
+    """Plantilla de mensaje (WhatsApp HSM) que el tenant registrará en Meta."""
+
+    nombre: str = Field(min_length=1, max_length=80)
+    body: str = Field(min_length=1)
+    variables: list[str] = Field(default_factory=list)
+    categoria: Literal["utility", "marketing", "authentication"] = "utility"
+    idioma: str = Field(default="es", min_length=2, max_length=10)
+
+
+class ReglaAutomatizacion(_Strict):
+    """Regla de automatización/recordatorio (se persiste en automation_rules).
+
+    El `tipo` es libre (la semántica la implementa el scheduler/dispatch);
+    tipos conocidos hoy: `appointment_reminder`, `followup_30d`, `custom`.
+    Los legacy `trial_class`/`colegiatura` siguen aceptados por compatibilidad
+    con tenants creados en fases anteriores.
+    """
+
+    tipo: str = Field(min_length=1, max_length=40)
+    enabled: bool = True
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class Politicas(_Strict):
+    """Políticas de operación del asistente."""
+
+    escalamiento: str = Field(
+        default="", max_length=2000,
+        description="Cuándo y cómo escalar a un humano.",
+    )
+    temas_sensibles: list[str] = Field(
+        default_factory=list,
+        description="Temas que fuerzan handoff inmediato (no los resuelve el bot).",
+    )
+    consentimiento_recordatorios: bool = True
+
+
+class PerfilGiro(_Strict):
+    """Perfil declarativo completo de un giro de negocio."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    giro: str = Field(min_length=1, max_length=40)
+    # slug sugerido al dar de alta (el onboarding puede sobreescribirlo).
+    slug: str = Field(min_length=2, max_length=64)
+    nombre: str = Field(min_length=1, max_length=160)
+    timezone: str = "America/Mexico_City"
+    locale: str = Field(default="es-MX", min_length=2, max_length=10)
+    system_prompt: str = Field(min_length=20)
+    tono: str = Field(min_length=1, max_length=40)
+    horarios: dict[str, Any] = Field(default_factory=dict)
+    herramientas_habilitadas: list[str] = Field(min_length=1)
+    reglas: list[ReglaAutomatizacion] = Field(default_factory=list)
+    plantillas_hsm: list[PlantillaHSM] = Field(default_factory=list)
+    conocimiento_semilla: list[ConocimientoItem] = Field(min_length=1)
+    politicas: Politicas = Field(default_factory=Politicas)
+    # Override opcional del ruteo comercial default (openai). Se valida con
+    # las mismas reglas que PUT /tenants/{id}/config (cero secretos aquí).
+    model_routing: dict[str, Any] | None = None
+
+    @field_validator("slug")
+    @classmethod
+    def _slug(cls, v: str) -> str:
+        if not _SLUG_RE.match(v):
+            raise ValueError(
+                "slug inválido: solo minúsculas, dígitos y guiones, "
+                "sin guion al inicio/fin"
+            )
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def _tz(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except Exception:
+            raise ValueError(f"timezone inválida: {v!r} (usa formato IANA)")
+        return v
+
+    @field_validator("horarios")
+    @classmethod
+    def _horarios(cls, v: dict) -> dict:
+        # Misma forma que PUT /config: {día: {open, close: HH:MM} | "closed"}.
+        from app.api.admin import _validate_business_hours
+
+        return _validate_business_hours(v)
+
+    @field_validator("herramientas_habilitadas")
+    @classmethod
+    def _herramientas(cls, v: list[str]) -> list[str]:
+        validas = _tool_names()
+        desconocidas = [t for t in v if t not in validas]
+        if desconocidas:
+            raise ValueError(
+                f"herramientas desconocidas: {desconocidas}. "
+                f"Válidas: {validas}"
+            )
+        return v
+
+    @field_validator("model_routing")
+    @classmethod
+    def _routing(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return v
+        from app.api.admin import ModelRoutingUpdate
+
+        # Reusa la validación estricta del panel (extra="forbid", sin secretos).
+        return ModelRoutingUpdate(**v).model_dump(exclude_none=True)
+
+    @model_validator(mode="after")
+    def _plantillas_unicas(self):
+        nombres = [p.nombre for p in self.plantillas_hsm]
+        dup = {n for n in nombres if nombres.count(n) > 1}
+        if dup:
+            raise ValueError(f"plantillas_hsm con nombre duplicado: {sorted(dup)}")
+        return self
+
+
+def load_template(path: str | Path) -> PerfilGiro:
+    """Lee un YAML de `templates/` y lo valida contra el schema.
+
+    Lanza ValueError con mensaje claro si el YAML es inválido o no cumple
+    el schema (la API lo convierte en 422).
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError(f"plantilla no encontrada: {path}")
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise ValueError(f"YAML inválido en {path.name}: {e}")
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name}: el documento debe ser un objeto YAML")
+    try:
+        return PerfilGiro(**data)
+    except Exception as e:
+        raise ValueError(f"{path.name}: perfil inválido: {e}")
+
+
+def list_templates() -> list[dict]:
+    """Enumera los giros disponibles en `templates/*.yaml` (validados).
+
+    Devuelve resúmenes para el panel/CLI. Un YAML inválido se reporta como
+    entrada con `error` en vez de tumbar el listado (el operador lo ve y lo
+    corrige).
+    """
+    out = []
+    if not TEMPLATES_DIR.is_dir():
+        return out
+    for path in sorted(TEMPLATES_DIR.glob("*.yaml")):
+        try:
+            perfil = load_template(path)
+            out.append({
+                "template": path.stem,
+                "giro": perfil.giro,
+                "nombre": perfil.nombre,
+                "slug_default": perfil.slug,
+                "schema_version": perfil.schema_version,
+                "herramientas": perfil.herramientas_habilitadas,
+                "reglas": len(perfil.reglas),
+                "plantillas": len(perfil.plantillas_hsm),
+                "conocimiento_items": len(perfil.conocimiento_semilla),
+            })
+        except ValueError as e:
+            out.append({"template": path.stem, "error": str(e)})
+    return out
+
+
+def apply_overrides(data: dict, overrides: dict | None) -> dict:
+    """Aplica overrides del operador sobre el perfil (merge profundo).
+
+    Solo se permiten claves que ya existen en el perfil (una clave nueva es
+    error: evita typos que se ignoren en silencio). Los dicts se fusionan
+    recursivamente; cualquier otro valor se reemplaza.
+    """
+    data = dict(data)
+    for key, value in (overrides or {}).items():
+        if key not in data:
+            raise ValueError(
+                f"override inválido: {key!r} no existe en el perfil "
+                f"(claves válidas: {sorted(data)})"
+            )
+        current = data[key]
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged = dict(current)
+            merged.update(value)
+            data[key] = merged
+        else:
+            data[key] = value
+    return data
