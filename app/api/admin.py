@@ -147,7 +147,7 @@ async def list_tenants(
     return [
         {"id": str(t.id), "slug": t.slug, "name": t.name,
          "business_type": t.business_type, "timezone": t.timezone,
-         "plan": t.plan, "status": t.status}
+         "plan": t.plan, "product": t.product, "status": t.status}
         for t in tenants
     ]
 
@@ -156,11 +156,13 @@ class TenantBillingBody(BaseModel):
     """Actualización comercial de un tenant (solo platform_admin).
 
     - plan: 'compra_unica' | 'renta'
-    - status: 'active' | 'suspended' | 'trial' (suspender corta el servicio)
+    - product: 'chatbot' | 'paquete_completo'
+    - status: 'active' | 'suspended' (suspender corta el servicio)
     - billing_ref: referencia externa de cobro (p.ej. suscripción MercadoPago)
     """
 
     plan: str | None = None
+    product: str | None = None
     status: str | None = None
     billing_ref: str | None = None
 
@@ -169,6 +171,13 @@ class TenantBillingBody(BaseModel):
     def _plan(cls, v):
         if v is not None and v not in VALID_PLANS:
             raise ValueError(f"plan debe ser uno de {VALID_PLANS}")
+        return v
+
+    @field_validator("product")
+    @classmethod
+    def _product(cls, v):
+        if v is not None and v not in VALID_PRODUCTS:
+            raise ValueError(f"product debe ser uno de {VALID_PRODUCTS}")
         return v
 
     @field_validator("status")
@@ -192,6 +201,8 @@ async def update_tenant_plan(
         raise HTTPException(status_code=404, detail="tenant no encontrado")
     if body.plan is not None:
         tenant.plan = body.plan
+    if body.product is not None:
+        tenant.product = body.product
     if body.status is not None:
         tenant.status = body.status
     if body.billing_ref is not None:
@@ -199,12 +210,13 @@ async def update_tenant_plan(
     await session.commit()
     await log_event(
         session, tenant.id, "tenant.plan_updated",
-        {"plan": tenant.plan, "status": tenant.status,
-         "by": user.email},
+        {"plan": tenant.plan, "product": tenant.product,
+         "status": tenant.status, "by": user.email},
     )
     await session.commit()
     return {"id": str(tenant.id), "slug": tenant.slug,
-            "plan": tenant.plan, "status": tenant.status,
+            "plan": tenant.plan, "product": tenant.product,
+            "status": tenant.status,
             "billing_ref": tenant.billing_ref}
 
 
@@ -542,7 +554,7 @@ async def update_tenant_config(
 from app.marketing import campaigns as campaign_svc  # noqa: E402
 from app.marketing.optin import OPTIN_SOURCES, set_opt_in  # noqa: E402
 from app.core.audit import log_event  # noqa: E402
-from app.core.billing import VALID_PLANS, VALID_STATUSES
+from app.core.billing import VALID_PLANS, VALID_PRODUCTS, VALID_STATUSES
 
 CAMPAIGN_ADMIN_ROLES = (ROLE_PLATFORM_ADMIN, ROLE_TENANT_ADMIN)
 TEMPLATE_STATUSES = ("pending", "approved", "rejected")

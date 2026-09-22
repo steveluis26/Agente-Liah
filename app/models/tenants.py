@@ -17,9 +17,13 @@ class Tenant(Base):
     timezone: Mapped[str] = mapped_column(String(40), nullable=False, default="America/Mexico_City")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     # Fase 8 (soporte/renta): modelo comercial del cliente y referencia de cobro.
-    # status: 'active' | 'suspended' | 'trial'. Un tenant no 'active' no
-    # procesa mensajes ni campañas (suspensión por falta de pago).
+    # status: 'active' | 'suspended'. Un tenant no 'active' no procesa
+    # mensajes ni campañas (suspensión por falta de pago). Sin fase de
+    # prueba: se compra o se renta.
     plan: Mapped[str] = mapped_column(String(40), nullable=False, default="renta")
+    # Producto contratado: 'chatbot' (solo el chatbot) o 'paquete_completo'
+    # (chatbot + CRM administrado).
+    product: Mapped[str] = mapped_column(String(40), nullable=False, default="paquete_completo")
     billing_ref: Mapped[str | None] = mapped_column(String(120))  # p.ej. ID suscripción MercadoPago
     api_key_hash: Mapped[str | None] = mapped_column(String(64))  # SHA-256 hex
     # Sal aleatoria por clave (hex). Las claves creadas antes de la Fase 1

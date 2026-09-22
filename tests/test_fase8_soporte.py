@@ -1,7 +1,7 @@
 """Tests de Fase 8 (empaque/soporte): plan de renta, suspensión, rate limit, logs.
 
 Cubre:
-- is_tenant_active: active=True; suspended/trial/inexistente=False
+- is_tenant_active: active=True; suspended/inexistente=False (sin trial)
 - webhook: tenant suspendido -> 200 sin encolar jobs (no gasta proceso)
 - PATCH /tenants/{id}/plan: platform_admin cambia plan/status/billing_ref;
   tenant_admin -> 403; plan inválido -> 422
@@ -93,11 +93,9 @@ async def test_tenant_active_matrix():
     async with db_mod.async_session_maker() as s:
         ta = await _tenant(s, "t-active")
         ts = await _tenant(s, "t-susp", status="suspended")
-        tt = await _tenant(s, "t-trial", status="trial")
         await s.commit()
         assert await is_tenant_active(s, ta.id) is True
         assert await is_tenant_active(s, ts.id) is False
-        assert await is_tenant_active(s, tt.id) is False
         import uuid
         assert await is_tenant_active(s, uuid.uuid4()) is False
 
@@ -157,12 +155,13 @@ async def test_update_tenant_plan_platform_admin():
         h_tenant = await _login(c, "op@t-plan.test")
 
         r = await c.patch(f"/api/v1/admin/tenants/{tid}/plan",
-                          json={"plan": "compra_unica", "status": "suspended",
-                                "billing_ref": "MP-123"},
+                          json={"plan": "compra_unica", "product": "chatbot",
+                                "status": "suspended", "billing_ref": "MP-123"},
                           headers=h_admin)
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["plan"] == "compra_unica"
+        assert data["product"] == "chatbot"
         assert data["status"] == "suspended"
         assert data["billing_ref"] == "MP-123"
 
@@ -176,11 +175,20 @@ async def test_update_tenant_plan_platform_admin():
                            json={"plan": "gratis"}, headers=h_admin)
         assert r3.status_code == 422
 
+        # product inválido -> 422; 'trial' ya no existe -> 422
+        r3b = await c.patch(f"/api/v1/admin/tenants/{tid}/plan",
+                            json={"product": "demo"}, headers=h_admin)
+        assert r3b.status_code == 422
+        r3c = await c.patch(f"/api/v1/admin/tenants/{tid}/plan",
+                            json={"status": "trial"}, headers=h_admin)
+        assert r3c.status_code == 422
+
         # list_tenants expone plan y status
         r4 = await c.get("/api/v1/admin/tenants", headers=h_admin)
         assert r4.status_code == 200
         row = [x for x in r4.json() if x["slug"] == "t-plan"][0]
         assert row["plan"] == "compra_unica" and row["status"] == "suspended"
+        assert row["product"] == "chatbot"
 
 
 # ── rate limit (aislado) ───────────────────────────────────────────────

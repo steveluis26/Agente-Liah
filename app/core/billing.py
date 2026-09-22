@@ -2,8 +2,11 @@
 
 - plan: 'compra_unica' (el cliente asume su consumo de OpenAI/Meta) o
   'renta' (Steve hospeda y absorbe costos dentro de la mensualidad).
-- status: 'active' | 'suspended' | 'trial'. Solo 'active' procesa mensajes
-  y campañas: suspender = cortar el servicio por falta de pago.
+- product: 'chatbot' (solo el chatbot) o 'paquete_completo'
+  (chatbot + CRM administrado).
+- status: 'active' | 'suspended'. Solo 'active' procesa mensajes y
+  campañas: suspender = cortar el servicio por falta de pago.
+  Sin fase de prueba: se compra o se renta.
 """
 import uuid
 
@@ -16,8 +19,11 @@ VALID_PLANS = (PLAN_COMPRA_UNICA, PLAN_RENTA)
 
 STATUS_ACTIVE = "active"
 STATUS_SUSPENDED = "suspended"
-STATUS_TRIAL = "trial"
-VALID_STATUSES = (STATUS_ACTIVE, STATUS_SUSPENDED, STATUS_TRIAL)
+VALID_STATUSES = (STATUS_ACTIVE, STATUS_SUSPENDED)
+
+PRODUCT_CHATBOT = "chatbot"
+PRODUCT_PAQUETE = "paquete_completo"
+VALID_PRODUCTS = (PRODUCT_CHATBOT, PRODUCT_PAQUETE)
 
 
 async def get_tenant_status(session: AsyncSession, tenant_id: uuid.UUID) -> str | None:
