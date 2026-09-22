@@ -19,6 +19,7 @@ from typing import Protocol
 # Kinds de evento que el motor sabe manejar. Un canal puede mapear sus tipos
 # nativos a estos; lo que no encaje va como "unsupported".
 TEXT = "text"
+AUDIO = "audio"  # Fase 7f: nota de voz; el drenador la transcribe a texto
 UNSUPPORTED = "unsupported"
 
 
@@ -28,8 +29,8 @@ class InboundEvent:
 
     sender_external_id: str  # id del remitente en el canal (p.ej. wa_id)
     external_message_id: str  # id del mensaje en el canal (p.ej. wamid; dedupe)
-    kind: str  # "text" | "unsupported"
-    text: str = ""  # cuerpo si kind == "text"
+    kind: str  # "text" | "audio" | "unsupported"
+    text: str = ""  # cuerpo si kind == "text" (o texto transcrito si "audio")
     sender_name: str | None = None  # nombre de perfil si el canal lo da
     raw: dict = field(default_factory=dict)  # payload original (auditoría)
 

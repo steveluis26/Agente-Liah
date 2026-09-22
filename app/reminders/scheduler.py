@@ -109,6 +109,20 @@ async def _job_wrapper():
         logger.exception("Error en job de recordatorios")
 
 
+async def _briefing_wrapper():
+    # Fase 7f: resumen matutino del staff. Corre cada 15 min; la función
+    # decide por tenant si está "due" (ventana de 45 min tras la hora
+    # configurada + idempotencia por día), así que los reintentos no
+    # duplican.
+    try:
+        from app.reminders.staff_briefing import send_due_staff_briefings
+
+        await send_due_staff_briefings(db_mod.async_session_maker,
+                                       dry_run=False)
+    except Exception:  # noqa: BLE001 - el scheduler no debe morir
+        logger.exception("Error en job de briefing de staff")
+
+
 def _tenant_now(tz_name: str | None) -> datetime:
     """`now` naive en la zona del tenant (convención del calendario).
 
@@ -131,6 +145,9 @@ def start_scheduler():
     sched = AsyncIOScheduler()
     # cada hora; en prod ajustar a la hora configurada
     sched.add_job(_job_wrapper, "interval", hours=1, id="reminders_hourly")
+    # Fase 7f: briefing matutino del staff (la función filtra por tenant/hora)
+    sched.add_job(_briefing_wrapper, "interval", minutes=15,
+                  id="staff_briefing_quarterly")
     sched.start()
     logger.info("Scheduler de recordatorios iniciado")
     return sched

@@ -13,6 +13,7 @@ from app.models.platform_users import PlatformUser
 from app.models.privacy_terms import TenantPrivacyTerms
 from app.models.resources import Resource
 from app.models.service_types import ServiceType
+from app.models.staff import StaffMember
 from app.models.tenant_configs import TenantConfig
 from app.models.tenants import Tenant
 from app.models.templates import Template
@@ -47,6 +48,7 @@ __all__ = [
     "ContactTag",
     "Resource",
     "ServiceType",
+    "StaffMember",
     "TenantPrivacyTerms",
     "AppointmentResource",
     "WaitlistEntry",

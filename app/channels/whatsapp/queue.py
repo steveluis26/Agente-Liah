@@ -26,7 +26,11 @@ from app.agent.engine import run_agent
 from app.agent.ports import EmbedderPort, LLMPort, LLMResponse
 from app.agent.rag import search_knowledge
 from app.agent.sender import WhatsAppCloudSender
+from app.agent import staff as staffmod
+from app.agent.staff_notify import ensure_staff_contact
+from app.agent.transcriber import transcriber_for_tenant
 from app.channels.adapter import (
+    AUDIO,
     TEXT,
     UNSUPPORTED,
     ChannelAdapter,
@@ -76,8 +80,18 @@ class WhatsappAdapter:
                 if msg_type == "text"
                 else ""
             )
+            raw_extra = {}
             if msg_type == "text" and body.strip():
                 kind, text = TEXT, body
+            elif msg_type == "audio":
+                # Fase 7f: la nota de voz se transcribe en el drenador; aquí
+                # solo viaja el identificador del medio.
+                audio = msg.get("audio") or {}
+                kind, text = AUDIO, ""
+                raw_extra = {
+                    "audio_id": audio.get("id"),
+                    "audio_mime_type": audio.get("mime_type"),
+                }
             else:
                 kind, text = UNSUPPORTED, ""
             events.append(
@@ -87,7 +101,7 @@ class WhatsappAdapter:
                     kind=kind,
                     text=text,
                     sender_name=profile_name,
-                    raw={"msg_type": msg_type, "wamid": wamid},
+                    raw={"msg_type": msg_type, "wamid": wamid, **raw_extra},
                 )
             )
         return events
@@ -98,8 +112,17 @@ register_adapter(WhatsappAdapter())
 __all__ = ["WhatsappAdapter", "drain_jobs", "enqueue_job", "reprocess_job"]
 
 UNSUPPORTED_REPLY = (
-    "Por ahora solo puedo leer mensajes de texto. "
-    "Escríbeme tu duda con palabras y te ayudo."
+    "Por ahora puedo leer mensajes de texto y notas de voz. "
+    "Si me mandaste otra cosa, escríbeme tu duda con palabras y te ayudo."
+)
+
+STAFF_UNSUPPORTED_REPLY = (
+    "Por ahora entiendo texto y notas de voz. "
+    "Escríbeme «ayuda» para ver qué puedo hacer por ti."
+)
+
+TRANSCRIPTION_FAILED_REPLY = (
+    "No pude escuchar tu nota de voz. ¿Me lo escribes con palabras?"
 )
 
 
@@ -264,6 +287,118 @@ async def reprocess_job(session: AsyncSession, job_id: uuid.UUID) -> WebhookJob 
     return job
 
 
+async def _transcribe_inbound(
+    session: AsyncSession,
+    tenant_id,
+    event,
+    wamid: str,
+    wa_id: str,
+    contact_id: str,
+    dry_run: bool,
+) -> str | None:
+    """Transcribe un evento de audio entrante (Fase 7f).
+
+    Devuelve el texto transcrito para que alimente el flujo normal como si
+    fuera texto. Si la transcripción falla o viene vacía, responde cortés
+    al contacto, audita y devuelve None (el llamador hace `continue`).
+    Nunca levanta.
+    """
+    transcriber = await transcriber_for_tenant(session, tenant_id)
+    try:
+        tx = await transcriber.transcribe(
+            event.raw.get("audio_id") or "",
+            mime_type=event.raw.get("audio_mime_type"),
+        )
+    except Exception as e:  # noqa: BLE001 - el job no muere por el audio
+        logger.exception("Fallo transcribiendo audio %s", wamid)
+        tx = {"text": None, "error": f"{type(e).__name__}: {e}"}
+    text = (tx.get("text") or "").strip()
+    if text:
+        await log_event(session, tenant_id, "message.transcribed",
+                        {"wamid": wamid, "chars": len(text)})
+        return text
+    await log_event(session, tenant_id, "message.transcription_failed",
+                    {"wamid": wamid, "error": tx.get("error")})
+    sender = WhatsAppCloudSender(session)
+    await sender.send_text(
+        str(tenant_id), contact_id, wa_id, TRANSCRIPTION_FAILED_REPLY,
+        idempotency_key=f"webhook:{wamid}:transcription-failed",
+        dry_run=dry_run,
+    )
+    return None
+
+
+async def _handle_staff_event(
+    session: AsyncSession,
+    tenant_id,
+    staff,
+    event,
+    wamid: str,
+    dry_run: bool,
+) -> None:
+    """Ruteo de mensajes del staff (Fase 7f).
+
+    Sin Contact de cliente, sin consentimiento de privacidad, sin LLM de
+    cliente: el texto (o la transcripción de la nota de voz) va directo al
+    manejador de staff. Dedupe ligero por wamid sin persistir el inbound.
+    Nunca levanta: el staff siempre recibe respuesta o silencio auditado.
+    """
+    exists = await session.execute(
+        select(Message.id).where(
+            Message.tenant_id == tenant_id,
+            Message.meta_message_id == wamid,
+        )
+    )
+    if exists.scalar_one_or_none() is not None:
+        await log_event(session, tenant_id, "staff.message_duplicate_skipped",
+                        {"wamid": wamid, "staff_id": str(staff.id)})
+        return
+
+    body: str | None = None
+    if event.kind == AUDIO:
+        transcriber = await transcriber_for_tenant(session, tenant_id)
+        try:
+            tx = await transcriber.transcribe(
+                event.raw.get("audio_id") or "",
+                mime_type=event.raw.get("audio_mime_type"),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Fallo transcribiendo audio de staff %s", wamid)
+            tx = {"text": None, "error": f"{type(e).__name__}: {e}"}
+        body = (tx.get("text") or "").strip() or None
+        await log_event(
+            session, tenant_id,
+            "staff.message_transcribed" if body
+            else "staff.message_transcription_failed",
+            {"wamid": wamid, "staff_id": str(staff.id),
+             **({} if body else {"error": tx.get("error")})},
+        )
+        reply = (
+            await staffmod.handle_staff_message(session, tenant_id, staff, body)
+            if body else TRANSCRIPTION_FAILED_REPLY
+        )
+    elif event.kind == TEXT:
+        reply = await staffmod.handle_staff_message(
+            session, tenant_id, staff, event.text
+        )
+    else:
+        await log_event(session, tenant_id, "staff.message_unsupported",
+                        {"wamid": wamid, "staff_id": str(staff.id),
+                         "msg_type": event.raw.get("msg_type")})
+        reply = STAFF_UNSUPPORTED_REPLY
+
+    if reply:
+        contact = await ensure_staff_contact(session, tenant_id, staff)
+        sender = WhatsAppCloudSender(session)
+        await sender.send_text(
+            str(tenant_id), str(contact.id), staff.wa_id, reply,
+            idempotency_key=f"staff-reply:{wamid}",
+            dry_run=dry_run,
+        )
+        await log_event(session, tenant_id, "staff.replied",
+                        {"wamid": wamid, "staff_id": str(staff.id)})
+
+
 async def _process_job(
     session: AsyncSession,
     job: WebhookJob,
@@ -279,6 +414,19 @@ async def _process_job(
     for event in adapter.parse_events(change):
         wa_id = event.sender_external_id
         wamid = event.external_message_id
+
+        # Fase 7f: el staff jamás entra al flujo de cliente. La detección va
+        # ANTES de crear el Contact y ANTES del consentimiento de
+        # privacidad: un número staff nunca recibe el aviso de privacidad de
+        # cliente ni genera un contacto de cliente.
+        staff = await staffmod.get_staff_member(session, tenant_id, wa_id)
+        if staff is not None:
+            await _handle_staff_event(
+                session, tenant_id, staff, event, wamid, dry_run
+            )
+            await session.commit()
+            continue
+
         contact = await _get_or_create_contact(
             session, tenant_id, wa_id, event.sender_name
         )
@@ -296,9 +444,20 @@ async def _process_job(
             continue
 
         msg_type = event.raw.get("msg_type")
-        if event.kind != TEXT:
-            # Tipo no-texto: no se inserta vacío, no crashea; se responde
-            # cortés y se audita.
+        if event.kind == AUDIO:
+            # Fase 7f: la nota de voz se transcribe y el texto alimenta el
+            # flujo normal como si fuera texto (consentimiento, keywords,
+            # agente). Si falla, ya se respondió cortés dentro del helper.
+            body = await _transcribe_inbound(
+                session, tenant_id, event, wamid, wa_id, str(contact.id),
+                dry_run,
+            )
+            if body is None:
+                await session.commit()
+                continue
+        elif event.kind != TEXT:
+            # Tipo no-texto (no audio): no se inserta vacío, no crashea; se
+            # responde cortés y se audita.
             await log_event(session, tenant_id, "message.unsupported",
                             {"wamid": wamid, "msg_type": msg_type,
                              "contact_id": str(contact.id)})
@@ -310,10 +469,9 @@ async def _process_job(
             )
             await session.commit()
             continue
-
-        # A partir de aquí kind == "text" con cuerpo no vacío (el adapter ya
-        # filtró lo demás).
-        body = event.text
+        else:
+            # kind == "text" con cuerpo no vacío (el adapter ya filtró lo demás).
+            body = event.text
         # INSERT idempotente (carrera entre dos drains del mismo wamid).
         stmt = (
             pg_insert(Message)

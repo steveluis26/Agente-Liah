@@ -11,8 +11,9 @@ Contrato:
 Comportamiento ante payloads:
 - `value.statuses`: auditoría + matcheo contra envíos de campaña (Fase 6:
   delivered/read/failed por wamid); no generan trabajo ni respuesta.
-- mensajes no-texto: no crashean, no insertan vacíos (el drenador responde
-  cortés por el canal).
+- mensajes no-texto: no crashean, no insertan vacíos. Las notas de voz
+  (audio) se transcriben y entran al flujo normal como texto (Fase 7f); el
+  resto recibe respuesta cortés en el drenador.
 - `phone_number_id` desconocido: rechazo seguro (200 + log, sin procesar).
 """
 import json

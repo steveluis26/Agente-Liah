@@ -307,10 +307,18 @@ class WhatsAppCloudSender:
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> SendResult:
-        meta_id = await send_message(
-            self._session, tenant_id, contact_id, channel_contact_id, text,
-            dry_run=dry_run, idempotency_key=idempotency_key,
+        # Fase 7f: se propaga el SendResult real de `_send_impl` (incluye
+        # "skipped_duplicate"): los llamadores (p.ej. briefing de staff)
+        # necesitan distinguir un envío real de un duplicado omitido.
+        return await _send_impl(
+            self._session,
+            tenant_id,
+            contact_id,
+            channel_contact_id,
+            {"messaging_product": "whatsapp", "to": channel_contact_id,
+             "type": "text", "text": {"body": text}},
+            body_repr=text,
+            action="send_message",
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
         )
-        status = "dry_run" if dry_run else ("sent" if meta_id else "failed")
-        return {"message_id": None, "meta_message_id": meta_id,
-                "status": status, "error": None}

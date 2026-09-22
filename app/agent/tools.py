@@ -12,6 +12,7 @@ Reglas Fase 1:
 - `build_tools()` permite filtrar tools por tenant/tier (p.ej. un tier base
   sin agendamiento). El catálogo por defecto sigue siendo TOOLS.
 """
+import logging
 import re
 import uuid
 from enum import Enum
@@ -22,8 +23,11 @@ from app.agent import calendar as calmod
 from app.agent.consent import privacy_gate_error
 from app.agent.ports import EmbedderPort
 from app.agent.rag import RAG_THRESHOLD, search_knowledge
+from app.agent.staff_notify import notify_staff
 from app.models import Contact, Handoff
 from app.models.conversations import MODE_HUMAN, set_conversation_mode
+
+logger = logging.getLogger("liah.tools")
 
 
 class AppointmentType(str, Enum):
@@ -379,6 +383,21 @@ async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
             ctx.session, ctx.tenant_id, ctx.contact_id, MODE_HUMAN
         )
         await ctx.session.commit()
+        # Fase 7f: alerta al staff (owner/receptionist) con el motivo. El
+        # handoff ya está commiteado: notificar jamás lo revierte.
+        try:
+            motivo = (reason or "").strip() or "sin motivo indicado"
+            await notify_staff(
+                ctx.session,
+                ctx.tenant_id,
+                f"🙋 Handoff: un contacto necesita ayuda humana. "
+                f"Motivo: {motivo}.",
+                idempotency_key=f"staff-alert:handoff:{handoff.id}",
+            )
+        except Exception:  # noqa: BLE001 - notificar no revierte el handoff
+            logger.exception(
+                "Fallo alerta de staff tras handoff %s", handoff.id
+            )
         return {"escalated": True, "handoff_id": str(handoff.id)}
 
     return {"error": f"tool desconocido: {name}"}

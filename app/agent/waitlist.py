@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import availability as availmod
 from app.agent.ports import SenderPort
+from app.agent.staff_notify import notify_staff
 from app.core.audit import log_event
 from app.models import Contact, ServiceType, WaitlistEntry
 
@@ -146,6 +147,7 @@ async def offer_on_cancel(
         entry.status = "offered"
         contact = await session.get(Contact, entry.contact_id)
         wa_id = contact.wa_id if contact else None
+        offered_name = (contact.name if contact else None) or "sin nombre"
         nombre_servicio = st.nombre if st else service_type_slug
         fecha_txt = start_at.strftime("%d/%m/%Y")
         text = (
@@ -174,6 +176,19 @@ async def offer_on_cancel(
         )
         await session.commit()
         logger.info("Waitlist: hueco ofrecido a contacto %s", entry.contact_id)
+        # Fase 7f: alerta al staff ("hueco liberado"). La oferta ya está
+        # commiteada: notificar jamás la revierte.
+        try:
+            await notify_staff(
+                session,
+                tenant_id,
+                f"🟢 Hueco liberado: {nombre_servicio} el {fecha_txt} a las "
+                f"{hhmm}" + (f" en {venue}" if venue else "") +
+                f" — ofrecido a {offered_name}.",
+                idempotency_key=f"staff-alert:waitlist-offer:{entry.id}",
+            )
+        except Exception:  # noqa: BLE001 - notificar no revierte la oferta
+            logger.exception("Fallo alerta de staff tras oferta de waitlist")
         result.update({
             "offered": True,
             "contact_id": str(entry.contact_id),

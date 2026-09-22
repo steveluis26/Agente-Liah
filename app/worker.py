@@ -52,6 +52,7 @@ async def run_cycle(
     run_reminders: bool = True,
     reminder_dry_run: bool = False,
     run_campaigns: bool = True,
+    run_briefings: bool = True,
 ) -> dict:
     """UN ciclo del worker: drena la cola, corre recordatorios y campañas.
 
@@ -62,6 +63,7 @@ async def run_cycle(
     from app.channels.whatsapp.queue import _dry_run_default, drain_jobs
     from app.marketing.campaigns import dispatch_campaigns
     from app.reminders.scheduler import run_once
+    from app.reminders.staff_briefing import send_due_staff_briefings
 
     stats = await drain_jobs(
         session_maker,
@@ -87,11 +89,25 @@ async def run_cycle(
         except Exception as e:  # noqa: BLE001 - el worker no debe morir
             campaign_error = f"{type(e).__name__}: {e}"
             logger.exception("Error en dispatch de campañas")
+    # Fase 7f: resumen matutino del staff (due según config por tenant).
+    briefing_stats: dict | None = None
+    briefing_error = None
+    if run_briefings:
+        try:
+            briefing_stats = await send_due_staff_briefings(
+                session_maker,
+                dry_run=bool(dry_run) if dry_run is not None else _dry_run_default(),
+            )
+        except Exception as e:  # noqa: BLE001 - el worker no debe morir
+            briefing_error = f"{type(e).__name__}: {e}"
+            logger.exception("Error en briefing de staff")
     return {
         "drain": stats,
         "reminder_error": reminder_error,
         "campaigns": campaign_stats,
         "campaign_error": campaign_error,
+        "briefings": briefing_stats,
+        "briefing_error": briefing_error,
     }
 
 

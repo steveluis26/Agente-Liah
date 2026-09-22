@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import availability as availmod
 from app.agent.ports import AvailabilityResult, BookingResult, CancelResult
+from app.agent.staff_notify import notify_staff
 from app.agent.waitlist import offer_on_cancel
-from app.models import ActionLog, Appointment, AppointmentResource
+from app.models import ActionLog, Appointment, AppointmentResource, Contact, ServiceType
 
 logger = logging.getLogger("liah.calendar")
 
@@ -384,7 +385,34 @@ class MemoryCalendarAdapter:
         }
         freed_dt = appt.start_at
         appt_id = appt.id
+        # Fase 7f: datos para la alerta al staff (antes del commit).
+        contact = await self.session.get(Contact, appt.contact_id)
+        contact_name = (contact.name if contact else None) or "sin nombre"
+        servicio_txt = appt.service_type_slug or appt.type
+        if appt.service_type_slug:
+            st = (
+                await self.session.execute(
+                    select(ServiceType).where(
+                        ServiceType.tenant_id == self.tenant_id,
+                        ServiceType.slug == appt.service_type_slug,
+                    )
+                )
+            ).scalar_one_or_none()
+            if st is not None:
+                servicio_txt = st.nombre
+        fecha_txt = appt.start_at.strftime("%d/%m/%Y %H:%M")
         await self.session.commit()
+        # Fase 7f: alerta al staff (owner/receptionist). La cancelación ya
+        # está commiteada: un fallo notificando jamás la revierte.
+        try:
+            await notify_staff(
+                self.session,
+                self.tenant_id,
+                f"❌ Cita cancelada: {contact_name} — {fecha_txt} ({servicio_txt}).",
+                idempotency_key=f"staff-alert:cancel:{appt_id}",
+            )
+        except Exception:  # noqa: BLE001 - notificar no revierte cancelar
+            logger.exception("Fallo alerta de staff tras cancelar %s", appt_id)
         result: CancelResult = {
             "ok": True,
             "event_id": str(appt_id),

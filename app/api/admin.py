@@ -774,6 +774,10 @@ async def list_contacts(
     stmt = (
         select(Contact)
         .where(Contact.tenant_id == tenant_id)
+        # Fase 7f: los números del staff usan Contact como identidad de
+        # canal (contact_type="staff"); no son contactos de cliente y no se
+        # listan aquí.
+        .where(Contact.contact_type != "staff")
         .order_by(Contact.last_interaction_at.desc().nulls_last(),
                   Contact.created_at.desc())
         .limit(200)

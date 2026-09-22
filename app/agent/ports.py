@@ -152,6 +152,31 @@ class CalendarPort(Protocol):
         ...
 
 
+# ── Transcriptor (notas de voz) ──────────────────────────────
+# Fase 7f: las notas de voz entrantes se transcriben y el texto alimenta el
+# flujo normal del agente como si fuera texto. Puerto intercambiable: el
+# stub sirve para dev/tests; el Whisper real se conecta donde documenta
+# `app/agent/transcriber.py`.
+class TranscriptionResult(TypedDict, total=False):
+    text: str | None       # texto transcrito (None si falló)
+    language: str | None   # idioma detectado (si el proveedor lo da)
+    error: str | None
+
+
+@runtime_checkable
+class TranscriberPort(Protocol):
+    """Convierte un audio entrante (media_id del canal) en texto."""
+
+    async def transcribe(
+        self, media_id: str, *, mime_type: str | None = None
+    ) -> TranscriptionResult:
+        """Transcribe el audio identificado por `media_id`.
+
+        Nunca levanta: ante un fallo devuelve {"text": None, "error": ...}.
+        """
+        ...
+
+
 # ── Sender (canal de salida) ─────────────────────────
 # Primer paso del desacoplamiento multicanal (refinamiento 2026-09-21): el
 # motor/orquestador habla contra SenderPort, no contra WhatsApp. El adaptador
