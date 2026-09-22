@@ -366,8 +366,15 @@ async def run_agent(
                 args = tc["arguments"]
                 date = args.get("date")
                 slot = args.get("time_slot")
+                # El pre-check refleja los mismos parámetros del book: con
+                # service_type/venue valida el motor de recursos (Fase 7c),
+                # sin ellos el chequeo legacy por slot.
+                pre_args = {"date": date, "time_slot": slot}
+                for _k in ("service_type", "venue"):
+                    if args.get(_k):
+                        pre_args[_k] = args[_k]
                 pre_check = await toolmod.run_tool(
-                    "check_availability", {"date": date, "time_slot": slot}, ctx
+                    "check_availability", pre_args, ctx
                 )
                 if not pre_check.get("available"):
                     blocked = {

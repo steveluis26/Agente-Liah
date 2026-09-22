@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.embedder import FakeEmbedder
+from app.agent.consent import apply_privacy_gate
 from app.agent.engine import run_agent
 from app.agent.ports import EmbedderPort, LLMPort, LLMResponse
 from app.agent.rag import search_knowledge
@@ -336,6 +337,28 @@ async def _process_job(
                         {"wamid": wamid, "contact_id": str(contact.id)})
         await session.commit()
 
+        # Fase 7c: puerta de consentimiento de privacidad (determinista, sin
+        # LLM). Va ANTES de todo lo demás — incluso antes del opt-in de
+        # marketing: sin consentimiento no hay flujo de agente ni
+        # persistencia de datos personales. Si el mensaje otorga el
+        # consentimiento, el flujo normal continúa con ese mismo mensaje.
+        privacy = await apply_privacy_gate(session, tenant_id, contact, body)
+        if privacy["handled"]:
+            if privacy.get("reply"):
+                sender = WhatsAppCloudSender(session)
+                await sender.send_text(
+                    str(tenant_id), str(contact.id), wa_id, privacy["reply"],
+                    idempotency_key=f"webhook:{wamid}:privacy",
+                    dry_run=dry_run,
+                )
+                await log_event(
+                    session, tenant_id, "privacy.replied",
+                    {"wamid": wamid, "contact_id": str(contact.id),
+                     "transition": privacy.get("transition")},
+                )
+            await session.commit()
+            continue
+
         # Fase 6: regla de opt-in/opt-out de marketing por palabra clave
         # (determinista, sin LLM; configurable por tenant). Si el mensaje
         # era un opt-in/opt-out, se confirma con respuesta enlatada y NO
@@ -403,7 +426,9 @@ async def _get_or_create_contact(
         )
     ).scalar_one_or_none()
     if contact is None:
-        contact = Contact(tenant_id=tenant_id, wa_id=wa_id, name=name)
+        # Fase 7c: el nombre del perfil NO se persiste hasta que el contacto
+        # otorgue el consentimiento de privacidad (minimización de datos).
+        contact = Contact(tenant_id=tenant_id, wa_id=wa_id)
         session.add(contact)
         try:
             await session.flush()
@@ -417,7 +442,7 @@ async def _get_or_create_contact(
                     )
                 )
             ).scalar_one()
-    elif name and not contact.name:
+    elif name and not contact.name and contact.consent_status == "granted":
         contact.name = name
         await session.flush()
     return contact

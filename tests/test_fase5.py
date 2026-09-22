@@ -78,8 +78,12 @@ admin_password=PW,
 
 
 async def _make_contact(s, tenant_id, wa_id, consent="granted") -> Contact:
+    # Fase 7c: agendar exige consentimiento vigente (granted + versión de
+    # los términos del tenant; consultorio_medico trae la "1.0").
     contact = Contact(tenant_id=tenant_id, wa_id=wa_id,
-                      consent_status=consent)
+                      consent_status=consent,
+                      privacy_terms_version="1.0" if consent == "granted"
+                      else None)
     s.add(contact)
     await s.flush()
     return contact
@@ -231,6 +235,11 @@ def _change(wa, wamid, text):
 async def test_demo_handoff_urgency_creates_record_and_silences():
     async with db_mod.async_session_maker() as s:
         tid = await _onboard_clinic(s, "clinica-handoff")
+        # Fase 7c: la puerta de privacidad intercepta el primer mensaje de
+        # un contacto sin consentimiento; para probar el handoff, el
+        # contacto ya otorgó el consentimiento vigente.
+        s.add(Contact(tenant_id=tid, wa_id="521555009003",
+                      consent_status="granted", privacy_terms_version="1.0"))
         await s.commit()
 
     wa = "521555009003"

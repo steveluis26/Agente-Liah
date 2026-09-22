@@ -91,14 +91,24 @@ class CancelResult(TypedDict, total=False):
     ok: bool
     event_id: str | None  # cita cancelada
     error: str | None
+    freed_slot: dict | None  # hueco liberado p/la lista de espera:
+    # {"service_type_slug": str|None, "start_at": ISO|None, "venue": str|None}
 
 
 @runtime_checkable
 class CalendarPort(Protocol):
     """Fuente de verdad de disponibilidad y reservas del tenant."""
 
-    async def check_availability(self, date: str, time_slot: str) -> AvailabilityResult:
-        """Devuelve disponibilidad + alternativas reales si no hay cupo."""
+    async def check_availability(
+        self, date: str, time_slot: str,
+        service_type_slug: str | None = None,
+        venue: str | None = None,
+    ) -> AvailabilityResult:
+        """Devuelve disponibilidad + alternativas reales si no hay cupo.
+
+        Con `service_type_slug` usa el motor de recursos (Fase 7c); sin él,
+        el comportamiento legacy por slot.
+        """
         ...
 
     async def book(
@@ -109,6 +119,8 @@ class CalendarPort(Protocol):
         appointment_type: str,
         *,
         idempotency_key: str | None = None,
+        service_type_slug: str | None = None,
+        venue: str | None = None,
     ) -> BookingResult:
         """Reserva y devuelve el resultado.
 

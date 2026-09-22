@@ -434,6 +434,9 @@ async def test_two_clients_same_template_both_operate():
             contact = Contact(
                 tenant_id=tid, wa_id=f"52155500{i:04d}",
                 name=f"Paciente {i}", consent_status="granted",
+                # Fase 7c: agendar exige la versión vigente de los términos
+                # (consultorio_medico trae la "1.0").
+                privacy_terms_version="1.0",
             )
             s.add(contact)
             await s.flush()
@@ -481,7 +484,9 @@ async def test_cancel_and_reschedule_tools():
 
         tid = uuid_mod.UUID(result["tenant_id"])
         contact = Contact(tenant_id=tid, wa_id="521555009999", name="Ana",
-                          consent_status="granted")
+                          consent_status="granted",
+                          # Fase 7c: agendar exige la versión vigente.
+                          privacy_terms_version="1.0")
         s.add(contact)
         await s.flush()
         ctx = AgentContext(s, tid, contact.id, FakeEmbedder())

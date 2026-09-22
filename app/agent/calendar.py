@@ -9,6 +9,7 @@ Convención de tiempo: la BD guarda datetimes naive que representan la HORA
 LOCAL del tenant (`tz`). Toda interpretación de fecha/hora de entrada se hace
 explícitamente en esa zona (zoneinfo), nunca en la zona del servidor.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -17,8 +18,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent import availability as availmod
 from app.agent.ports import AvailabilityResult, BookingResult, CancelResult
-from app.models import ActionLog, Appointment
+from app.agent.waitlist import offer_on_cancel
+from app.models import ActionLog, Appointment, AppointmentResource
+
+logger = logging.getLogger("liah.calendar")
 
 DEFAULT_TZ = "America/Mexico_City"
 # Ventana genérica para buscar alternativas (el tenant la refina vía config).
@@ -110,7 +115,31 @@ class MemoryCalendarAdapter:
         return out
 
     # ── puerto ──
-    async def check_availability(self, date: str, time_slot: str) -> AvailabilityResult:
+    async def check_availability(
+        self,
+        date: str,
+        time_slot: str,
+        service_type_slug: str | None = None,
+        venue: str | None = None,
+        contact_id: str | None = None,
+    ) -> AvailabilityResult:
+        """Disponibilidad del slot.
+
+        Con `service_type_slug` usa el motor de recursos (Fase 7c:
+        capacidad, buffers, traslados, traslape de persona); sin él, el
+        comportamiento legacy por slot (los tests viejos llaman sin
+        service_type y siguen pasando).
+        """
+        if service_type_slug:
+            check = await availmod.check_resource_availability(
+                self.session, self.tenant_id, service_type_slug,
+                date, time_slot, venue=venue, contact_id=contact_id,
+            )
+            return {
+                "available": check["available"],
+                "alternatives": check["alternatives"],
+                "error": None if check["available"] else check["reason"],
+            }
         try:
             start_at = self._parse_start(date, time_slot)
         except ValueError:
@@ -134,6 +163,8 @@ class MemoryCalendarAdapter:
         appointment_type: str,
         *,
         idempotency_key: str | None = None,
+        service_type_slug: str | None = None,
+        venue: str | None = None,
     ) -> BookingResult:
         # 1) Idempotencia: reintento con la misma clave -> resultado guardado.
         if idempotency_key:
@@ -154,6 +185,13 @@ class MemoryCalendarAdapter:
         except ValueError:
             return {"ok": False, "event_id": None, "start_at": None,
                     "error": "formato inválido: usa YYYY-MM-DD y HH:MM"}
+
+        # 2b) Ruta con tipo de servicio: motor de recursos (Fase 7c).
+        if service_type_slug:
+            return await self._book_with_resources(
+                contact_id, date, time_slot, appointment_type, start_at,
+                service_type_slug, venue, idempotency_key,
+            )
 
         # 3) Re-validación de disponibilidad DENTRO de la misma transacción:
         #    si el slot se ocupó entre el check y el book (carrera), el
@@ -202,12 +240,119 @@ class MemoryCalendarAdapter:
         await self.session.commit()
         return result
 
+    async def _book_with_resources(
+        self,
+        contact_id: str,
+        date: str,
+        time_slot: str,
+        appointment_type: str,
+        start_at: datetime,
+        service_type_slug: str,
+        venue: str | None,
+        idempotency_key: str | None,
+    ) -> BookingResult:
+        """Reserva con tipo de servicio: valida con el motor de recursos y
+        crea la cita + filas `AppointmentResource` en la misma transacción.
+
+        Conserva idempotencia (ActionLog) y el guard del índice único
+        (tenant_id, start_at): dos citas NO pueden compartir el instante
+        exacto aunque usen recursos distintos (limitación documentada en
+        docs/DECISIONES_FASE7C.md; requiere migración para relajarla).
+        """
+        st, resolved, err = await availmod.resolve_service_resources(
+            self.session, self.tenant_id, service_type_slug
+        )
+        if err:
+            return {"ok": False, "event_id": None, "start_at": None,
+                    "error": err}
+        check = await availmod.check_resource_availability(
+            self.session, self.tenant_id, service_type_slug, date, time_slot,
+            venue=venue, contact_id=contact_id,
+        )
+        if not check["available"]:
+            return {
+                "ok": False,
+                "event_id": None,
+                "start_at": None,
+                "error": check["reason"],
+                "alternatives": check["alternatives"],
+            }
+
+        appt = Appointment(
+            tenant_id=self.tenant_id,
+            contact_id=uuid.UUID(contact_id),
+            type=appointment_type,
+            start_at=start_at,
+            end_at=start_at + timedelta(minutes=st.duracion_min),
+            status="confirmed",
+            service_type_slug=service_type_slug,
+            venue=venue,
+        )
+        self.session.add(appt)
+        try:
+            await self.session.flush()
+            for resource in resolved:
+                self.session.add(
+                    AppointmentResource(
+                        tenant_id=self.tenant_id,
+                        appointment_id=appt.id,
+                        resource_id=resource.id,
+                    )
+                )
+            await self.session.flush()
+        except IntegrityError:
+            await self.session.rollback()
+            # Carrera en el guard único: re-chequea para dar alternativas
+            # reales del motor de recursos.
+            recheck = await availmod.check_resource_availability(
+                self.session, self.tenant_id, service_type_slug, date,
+                time_slot, venue=venue, contact_id=contact_id,
+            )
+            return {
+                "ok": False,
+                "event_id": None,
+                "start_at": None,
+                "error": "slot ocupado (validación en transacción)",
+                "alternatives": recheck["alternatives"],
+            }
+
+        result: BookingResult = {
+            "ok": True,
+            "event_id": str(appt.id),
+            "start_at": start_at.isoformat(),
+            "error": None,
+        }
+        if idempotency_key:
+            self.session.add(
+                ActionLog(
+                    tenant_id=self.tenant_id,
+                    contact_id=uuid.UUID(contact_id),
+                    action="book_appointment",
+                    idempotency_key=idempotency_key,
+                    status="ok",
+                    result=dict(result),
+                )
+            )
+        await self.session.commit()
+        return result
+
     async def cancel(
-        self, contact_id: str, date: str, time_slot: str
+        self,
+        contact_id: str,
+        date: str,
+        time_slot: str,
+        *,
+        notify_waitlist: bool = True,
+        waitlist_sender=None,
     ) -> CancelResult:
         """Cancela la cita confirmada del contacto en fecha/hora dadas.
 
         Marca `status="cancelled"` (no borra: queda rastro auditable).
+        Devuelve además `freed_slot` (service_type_slug, start_at, venue)
+        para la lista de espera. Si la cita tenía tipo de servicio, ofrece
+        el hueco liberado al primer contacto en espera que califique
+        (Fase 7c; no auto-agenda). Un fallo en la oferta NO revierte la
+        cancelación: se reporta en `waitlist_error`.
         """
         try:
             start_at = self._parse_start(date, time_slot)
@@ -231,8 +376,40 @@ class MemoryCalendarAdapter:
                 "error": "no hay cita confirmada en ese horario",
             }
         appt.status = "cancelled"
+        # Capturar ANTES del commit (expire_on_commit puede vaciar el objeto).
+        freed_slot = {
+            "service_type_slug": appt.service_type_slug,
+            "start_at": appt.start_at.isoformat(),
+            "venue": appt.venue,
+        }
+        freed_dt = appt.start_at
+        appt_id = appt.id
         await self.session.commit()
-        return {"ok": True, "event_id": str(appt.id), "error": None}
+        result: CancelResult = {
+            "ok": True,
+            "event_id": str(appt_id),
+            "error": None,
+            "freed_slot": freed_slot,
+        }
+        if notify_waitlist and freed_slot["service_type_slug"]:
+            try:
+                result["waitlist"] = await offer_on_cancel(  # type: ignore[typeddict-unknown-key]
+                    self.session,
+                    self.tenant_id,
+                    {
+                        "service_type_slug": freed_slot["service_type_slug"],
+                        "start_at": freed_dt,
+                        "venue": freed_slot["venue"],
+                        "exclude_appointment_id": appt_id,
+                    },
+                    sender=waitlist_sender,
+                )
+            except Exception as e:  # la cancelación ya es un hecho
+                logger.exception(
+                    "Fallo oferta de waitlist tras cancelar %s", appt_id
+                )
+                result["waitlist_error"] = str(e)  # type: ignore[typeddict-unknown-key]
+        return result
 
     async def reschedule(
         self,
@@ -244,11 +421,18 @@ class MemoryCalendarAdapter:
         appointment_type: str,
         *,
         idempotency_key: str | None = None,
+        service_type_slug: str | None = None,
+        venue: str | None = None,
     ) -> BookingResult:
         """Reprograma atómicamente: cancela la cita vieja y reserva la nueva.
 
         Si el nuevo slot está ocupado (o el formato es inválido), la cita
         original se conserva: el rollback revierte también la cancelación.
+        Con `service_type_slug`, el nuevo slot se valida con el motor de
+        recursos (Fase 7c) y se enlazan los `AppointmentResource`.
+        NOTA: el hueco de la cita vieja NO se ofrece a la lista de espera
+        aquí (offer_on_cancel hace commit y rompería la atomicidad); la
+        oferta ocurre solo en `cancel`.
         """
         if idempotency_key:
             prev = await self.session.execute(
@@ -292,6 +476,13 @@ class MemoryCalendarAdapter:
         old_event_id = str(appt.id)
         appt.status = "cancelled"
         await self.session.flush()
+
+        if service_type_slug:
+            return await self._reschedule_with_resources(
+                contact_id, new_date, new_time_slot, appointment_type,
+                new_start, service_type_slug, venue, idempotency_key,
+                old_event_id, appt.id,
+            )
 
         new_appt = Appointment(
             tenant_id=self.tenant_id,
@@ -337,6 +528,104 @@ class MemoryCalendarAdapter:
         await self.session.commit()
         return result
 
+    async def _reschedule_with_resources(
+        self,
+        contact_id: str,
+        new_date: str,
+        new_time_slot: str,
+        appointment_type: str,
+        new_start: datetime,
+        service_type_slug: str,
+        venue: str | None,
+        idempotency_key: str | None,
+        old_event_id: str,
+        old_appt_id,
+    ) -> BookingResult:
+        """Segunda mitad de `reschedule` con tipo de servicio.
+
+        La cita vieja ya está marcada `cancelled` (sin commit). Si el nuevo
+        slot no califica, el rollback restaura la cita vieja.
+        """
+        st, resolved, err = await availmod.resolve_service_resources(
+            self.session, self.tenant_id, service_type_slug
+        )
+        if err:
+            await self.session.rollback()
+            return {"ok": False, "event_id": None, "start_at": None,
+                    "error": err}
+        check = await availmod.check_resource_availability(
+            self.session, self.tenant_id, service_type_slug, new_date,
+            new_time_slot, venue=venue,
+            exclude_appointment_id=old_appt_id, contact_id=contact_id,
+        )
+        if not check["available"]:
+            await self.session.rollback()
+            return {
+                "ok": False,
+                "event_id": None,
+                "start_at": None,
+                "error": check["reason"] + " (la cita original se conserva)",
+                "alternatives": check["alternatives"],
+            }
+
+        new_appt = Appointment(
+            tenant_id=self.tenant_id,
+            contact_id=uuid.UUID(contact_id),
+            type=appointment_type,
+            start_at=new_start,
+            end_at=new_start + timedelta(minutes=st.duracion_min),
+            status="confirmed",
+            service_type_slug=service_type_slug,
+            venue=venue,
+        )
+        self.session.add(new_appt)
+        try:
+            await self.session.flush()
+            for resource in resolved:
+                self.session.add(
+                    AppointmentResource(
+                        tenant_id=self.tenant_id,
+                        appointment_id=new_appt.id,
+                        resource_id=resource.id,
+                    )
+                )
+            await self.session.flush()
+        except IntegrityError:
+            await self.session.rollback()
+            recheck = await availmod.check_resource_availability(
+                self.session, self.tenant_id, service_type_slug, new_date,
+                new_time_slot, venue=venue,
+                exclude_appointment_id=old_appt_id, contact_id=contact_id,
+            )
+            return {
+                "ok": False,
+                "event_id": None,
+                "start_at": None,
+                "error": "nuevo slot ocupado (la cita original se conserva)",
+                "alternatives": recheck["alternatives"],
+            }
+
+        result: BookingResult = {
+            "ok": True,
+            "event_id": str(new_appt.id),
+            "start_at": new_start.isoformat(),
+            "cancelled_event_id": old_event_id,
+            "error": None,
+        }
+        if idempotency_key:
+            self.session.add(
+                ActionLog(
+                    tenant_id=self.tenant_id,
+                    contact_id=uuid.UUID(contact_id),
+                    action="reschedule_appointment",
+                    idempotency_key=idempotency_key,
+                    status="ok",
+                    result=dict(result),
+                )
+            )
+        await self.session.commit()
+        return result
+
 
 class CalComAdapter:
     """Stub para la API real de Cal.com.
@@ -350,7 +639,11 @@ class CalComAdapter:
         self.api_key = api_key
         self.event_type_id = event_type_id
 
-    async def check_availability(self, date: str, time_slot: str) -> AvailabilityResult:
+    async def check_availability(
+        self, date: str, time_slot: str,
+        service_type_slug: str | None = None,
+        venue: str | None = None,
+    ) -> AvailabilityResult:
         raise NotImplementedError(
             "CalComAdapter.check_availability: implementar contra GET /v1/slots"
         )
@@ -363,6 +656,8 @@ class CalComAdapter:
         appointment_type: str,
         *,
         idempotency_key: str | None = None,
+        service_type_slug: str | None = None,
+        venue: str | None = None,
     ) -> BookingResult:
         raise NotImplementedError(
             "CalComAdapter.book: implementar contra POST /v1/bookings"
@@ -385,6 +680,8 @@ class CalComAdapter:
         appointment_type: str,
         *,
         idempotency_key: str | None = None,
+        service_type_slug: str | None = None,
+        venue: str | None = None,
     ) -> BookingResult:
         raise NotImplementedError(
             "CalComAdapter.reschedule: implementar contra PATCH /v1/bookings"

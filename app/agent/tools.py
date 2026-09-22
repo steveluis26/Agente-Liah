@@ -19,9 +19,10 @@ from enum import Enum
 from pydantic import BaseModel, field_validator
 
 from app.agent import calendar as calmod
+from app.agent.consent import privacy_gate_error
 from app.agent.ports import EmbedderPort
 from app.agent.rag import RAG_THRESHOLD, search_knowledge
-from app.models import Handoff
+from app.models import Contact, Handoff
 from app.models.conversations import MODE_HUMAN, set_conversation_mode
 
 
@@ -48,6 +49,10 @@ class SearchArgs(BaseModel):
 class CheckAvailabilityArgs(BaseModel):
     date: str
     time_slot: str
+    # Fase 7c: opcionales. Con `service_type` se usa el motor de recursos
+    # (capacidad, buffers, traslados); sin él, el chequeo legacy por slot.
+    service_type: str | None = None
+    venue: str | None = None
 
     @field_validator("date")
     @classmethod
@@ -80,6 +85,9 @@ class RescheduleAppointmentArgs(BaseModel):
     new_date: str
     new_time_slot: str
     type: AppointmentType = AppointmentType.other
+    # Fase 7c: aplican al NUEVO slot (motor de recursos + venue del evento).
+    service_type: str | None = None
+    venue: str | None = None
 
     @field_validator("old_date", "new_date")
     @classmethod
@@ -124,13 +132,21 @@ def build_tools(enabled: list[str] | set[str] | None = None) -> list[dict]:
             "type": "function",
             "function": {
                 "name": "check_availability",
-                "description": "Consulta si hay cupo para agendar en una fecha y hora.",
+                "description": "Consulta si hay cupo para agendar en una fecha y hora. "
+                               "Si se indica service_type (slug del tipo de servicio), "
+                               "valida recursos, buffers y traslados.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "date": {"type": "string", "description": "Fecha YYYY-MM-DD."},
                         "time_slot": {"type": "string",
                                       "description": "Hora HH:MM o rango HH:MM-HH:MM."},
+                        "service_type": {"type": "string",
+                                         "description": "Opcional: slug del tipo de "
+                                                        "servicio a agendar."},
+                        "venue": {"type": "string",
+                                  "description": "Opcional: sede/ubicación del evento "
+                                                 "(negocios móviles)."},
                     },
                     "required": ["date", "time_slot"],
                 },
@@ -142,7 +158,8 @@ def build_tools(enabled: list[str] | set[str] | None = None) -> list[dict]:
                 "name": "book_appointment",
                 "description": "Reserva una cita en el calendario del negocio para el "
                                "contacto actual. No acepta contact_id: siempre agenda "
-                               "para quien escribe.",
+                               "para quien escribe. Requiere consentimiento de "
+                               "privacidad vigente del contacto.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -152,6 +169,12 @@ def build_tools(enabled: list[str] | set[str] | None = None) -> list[dict]:
                         "type": {"type": "string",
                                  "description": "Tipo: consultation | followup | other.",
                                  "enum": ["consultation", "followup", "other"]},
+                        "service_type": {"type": "string",
+                                         "description": "Opcional: slug del tipo de "
+                                                        "servicio a agendar."},
+                        "venue": {"type": "string",
+                                  "description": "Opcional: sede/ubicación del evento "
+                                                 "(negocios móviles)."},
                     },
                     "required": ["date", "time_slot", "type"],
                 },
@@ -181,7 +204,8 @@ def build_tools(enabled: list[str] | set[str] | None = None) -> list[dict]:
                 "name": "reschedule_appointment",
                 "description": "Reprograma una cita del contacto actual: cancela la "
                                "cita vieja y reserva el nuevo horario en una sola "
-                               "operación atómica. No acepta contact_id.",
+                               "operación atómica. No acepta contact_id. Requiere "
+                               "consentimiento de privacidad vigente del contacto.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -192,6 +216,13 @@ def build_tools(enabled: list[str] | set[str] | None = None) -> list[dict]:
                         "type": {"type": "string",
                                  "description": "Tipo: consultation | followup | other.",
                                  "enum": ["consultation", "followup", "other"]},
+                        "service_type": {"type": "string",
+                                         "description": "Opcional: slug del tipo de "
+                                                        "servicio (aplica al nuevo "
+                                                        "horario)."},
+                        "venue": {"type": "string",
+                                  "description": "Opcional: sede/ubicación del evento "
+                                                 "(negocios móviles)."},
                     },
                     "required": ["old_date", "old_time_slot", "new_date", "new_time_slot"],
                 },
@@ -231,6 +262,17 @@ def _validation_error(model_cls, args: dict) -> dict | None:
         return {"_error": str(e)}
 
 
+async def _require_privacy_consent(ctx: "AgentContext") -> str | None:
+    """Gating de privacidad (Fase 7c): agendar/reprogramar exige
+    `consent_status == "granted"` Y `privacy_terms_version` == versión
+    vigente del tenant. Devuelve el error de negocio o None si puede
+    operar."""
+    contact = await ctx.session.get(Contact, ctx.contact_id)
+    if contact is None:
+        return "contacto desconocido: no se puede agendar"
+    return await privacy_gate_error(ctx.session, ctx.tenant_id, contact)
+
+
 async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
     args = dict(args or {})
     # Defensa en profundidad: el LLM nunca fija la identidad del contacto.
@@ -254,13 +296,24 @@ async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
         cal = calmod.MemoryCalendarAdapter(
             ctx.session, ctx.tenant_id, tz=ctx.timezone
         )
-        return await cal.check_availability(parsed["date"], parsed["time_slot"])
+        return await cal.check_availability(
+            parsed["date"], parsed["time_slot"],
+            service_type_slug=parsed.get("service_type"),
+            venue=parsed.get("venue"),
+            contact_id=str(ctx.contact_id),
+        )
 
     if name == "book_appointment":
         parsed = _validation_error(BookAppointmentArgs, args)
         if "_error" in parsed:
             return {"ok": False, "event_id": None, "start_at": None,
                     "error": parsed["_error"]}
+        # Gating de privacidad (Fase 7c): sin consentimiento vigente no
+        # se agenda. El guard va ANTES de tocar el calendario.
+        consent_err = await _require_privacy_consent(ctx)
+        if consent_err:
+            return {"ok": False, "event_id": None, "start_at": None,
+                    "error": consent_err}
         cal = calmod.MemoryCalendarAdapter(
             ctx.session, ctx.tenant_id, tz=ctx.timezone
         )
@@ -270,6 +323,8 @@ async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
             parsed["time_slot"],
             parsed["type"].value,
             idempotency_key=args.get("idempotency_key"),
+            service_type_slug=parsed.get("service_type"),
+            venue=parsed.get("venue"),
         )
 
     if name == "cancel_appointment":
@@ -288,6 +343,11 @@ async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
         if "_error" in parsed:
             return {"ok": False, "event_id": None, "start_at": None,
                     "error": parsed["_error"]}
+        # Gating de privacidad (Fase 7c): igual que book_appointment.
+        consent_err = await _require_privacy_consent(ctx)
+        if consent_err:
+            return {"ok": False, "event_id": None, "start_at": None,
+                    "error": consent_err}
         cal = calmod.MemoryCalendarAdapter(
             ctx.session, ctx.tenant_id, tz=ctx.timezone
         )
@@ -299,6 +359,8 @@ async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
             parsed["new_time_slot"],
             parsed["type"].value,
             idempotency_key=args.get("idempotency_key"),
+            service_type_slug=parsed.get("service_type"),
+            venue=parsed.get("venue"),
         )
 
     if name == "escalate_to_human":
