@@ -146,9 +146,66 @@ async def list_tenants(
     tenants = (await session.execute(q)).scalars().all()
     return [
         {"id": str(t.id), "slug": t.slug, "name": t.name,
-         "business_type": t.business_type, "timezone": t.timezone}
+         "business_type": t.business_type, "timezone": t.timezone,
+         "plan": t.plan, "status": t.status}
         for t in tenants
     ]
+
+
+class TenantBillingBody(BaseModel):
+    """Actualización comercial de un tenant (solo platform_admin).
+
+    - plan: 'compra_unica' | 'renta'
+    - status: 'active' | 'suspended' | 'trial' (suspender corta el servicio)
+    - billing_ref: referencia externa de cobro (p.ej. suscripción MercadoPago)
+    """
+
+    plan: str | None = None
+    status: str | None = None
+    billing_ref: str | None = None
+
+    @field_validator("plan")
+    @classmethod
+    def _plan(cls, v):
+        if v is not None and v not in VALID_PLANS:
+            raise ValueError(f"plan debe ser uno de {VALID_PLANS}")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def _status_billing(cls, v):
+        if v is not None and v not in VALID_STATUSES:
+            raise ValueError(f"status debe ser uno de {VALID_STATUSES}")
+        return v
+
+
+@router.patch("/tenants/{tenant_id}/plan")
+async def update_tenant_plan(
+    tenant_id: uuid.UUID,
+    body: TenantBillingBody,
+    user: CurrentUser = Depends(require_platform_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Soporte Fase 8: cambiar plan/estatus/referencia de cobro de un cliente."""
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant no encontrado")
+    if body.plan is not None:
+        tenant.plan = body.plan
+    if body.status is not None:
+        tenant.status = body.status
+    if body.billing_ref is not None:
+        tenant.billing_ref = body.billing_ref
+    await session.commit()
+    await log_event(
+        session, tenant.id, "tenant.plan_updated",
+        {"plan": tenant.plan, "status": tenant.status,
+         "by": user.email},
+    )
+    await session.commit()
+    return {"id": str(tenant.id), "slug": tenant.slug,
+            "plan": tenant.plan, "status": tenant.status,
+            "billing_ref": tenant.billing_ref}
 
 
 # ── Bandeja de handoff ────────────────────────────────────────────────────
@@ -485,6 +542,7 @@ async def update_tenant_config(
 from app.marketing import campaigns as campaign_svc  # noqa: E402
 from app.marketing.optin import OPTIN_SOURCES, set_opt_in  # noqa: E402
 from app.core.audit import log_event  # noqa: E402
+from app.core.billing import VALID_PLANS, VALID_STATUSES
 
 CAMPAIGN_ADMIN_ROLES = (ROLE_PLATFORM_ADMIN, ROLE_TENANT_ADMIN)
 TEMPLATE_STATUSES = ("pending", "approved", "rejected")

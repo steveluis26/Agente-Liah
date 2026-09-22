@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # extra["campaign_cost_usd"].
     liah_campaign_cost_usd: float = 0.06
 
+    # Fase 8 — empaque/soporte.
+    # CORS: orígenes permitidos separados por coma ("" = sin CORS, solo mismo origen).
+    liah_cors_origins: str = ""
+    # Rate limiting anti-abuso (middleware en memoria por proceso).
+    liah_rate_limit_enabled: bool = True
+    # Logging JSON estructurado con tenant_id (ideal en producción).
+    liah_log_json: bool = False
+
     @model_validator(mode="after")
     def _forbid_default_secrets_in_production(self):
         if self.app_env == "production":

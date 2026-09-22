@@ -14,6 +14,9 @@ os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
 # Credenciales de Meta para el test de Embedded Signup (se usan solo si están seteadas).
 os.environ.setdefault("WHATSAPP_APP_ID", "TEST_APP_ID")
 os.environ.setdefault("WHATSAPP_APP_SECRET", "TEST_APP_SECRET")
+# Rate limiting desactivado en tests: los tests de login harían 429 entre sí.
+# El middleware se prueba de forma aislada en test_fase8_soporte.py.
+os.environ.setdefault("LIAH_RATE_LIMIT_ENABLED", "false")
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool

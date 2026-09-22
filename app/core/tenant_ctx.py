@@ -27,8 +27,15 @@ def get_tenant_id() -> uuid.UUID:
     return tenant_id
 
 
-def clear_tenant_id() -> None:
-    _tenant_id_ctx.set(None)
+def clear_tenant_id() -> None:    _tenant_id_ctx.set(None)
+
+
+def peek_tenant_id() -> Optional[uuid.UUID]:
+    """Versión no exigente de get_tenant_id(): None si no hay contexto.
+
+    Para logging y diagnóstico (Fase 8): nunca debe romper el flujo.
+    """
+    return _tenant_id_ctx.get()
 
 
 def require_tenant() -> uuid.UUID:

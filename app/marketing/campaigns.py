@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.sender import send_template
 from app.core.audit import log_event
+from app.core.billing import is_tenant_active
 from app.core.config import get_settings
 from app.models import (
     Campaign,
@@ -403,6 +404,9 @@ async def dispatch_campaigns(
             if campaign is None:
                 continue
             tenant = campaign.tenant_id
+            # Fase 8: no gastar Meta en tenants suspendidos/inactivos.
+            if not await is_tenant_active(session, tenant):
+                continue
             extra = await _tenant_extra(session, tenant)
 
             # Auto-launch de programadas vencidas.

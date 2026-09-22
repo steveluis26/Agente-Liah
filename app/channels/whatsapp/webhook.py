@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.channels.whatsapp.queue import drain_jobs, enqueue_job, reprocess_job
 from app.channels.whatsapp.security import verify_meta_signature
 from app.core.audit import log_event
+from app.core.billing import is_tenant_active
 from app.core.config import get_settings
 from app.core.db import async_session_maker, get_session
 from app.core.tenant_ctx import clear_tenant_id, set_tenant_id
@@ -98,6 +99,14 @@ async def receive(
                 continue
             set_tenant_id(channel.tenant_id)
             try:
+                # Fase 8: tenant suspendido (falta de pago) -> no se procesa
+                # nada. 200 para que Meta no reintente; queda en el log.
+                if not await is_tenant_active(session, channel.tenant_id):
+                    logger.warning(
+                        "tenant %s suspendido/inactivo: payload descartado",
+                        channel.tenant_id,
+                    )
+                    continue
                 # statuses tipados en el schema: auditoría + matcheo contra
                 # envíos de campaña (Fase 6: delivered/read por wamid).
                 if value.statuses:

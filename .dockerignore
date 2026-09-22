@@ -1,0 +1,15 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+.venv/
+venv/
+logs/
+*.log
+tests/
+docs/
+infra/
+your_files/
+.env
+.pytest_cache/
+agente_liah.egg-info/

@@ -114,11 +114,11 @@ async def run_cycle(
 async def amain() -> None:
     """Loop principal del worker. Termina limpio con SIGTERM/SIGINT."""
     from app.core import db as db_mod
+    from app.core.config import get_settings
+    from app.core.logging import setup_logging
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    _s = get_settings()
+    setup_logging(json_format=_s.liah_log_json)
     drain_interval = _env_int("WORKER_DRAIN_INTERVAL_S", 10)
     reminder_interval = _env_int("WORKER_REMINDER_INTERVAL_S", 3600)
     drain_limit = _env_int("WORKER_DRAIN_LIMIT", 50)

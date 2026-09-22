@@ -349,6 +349,22 @@ de esta firma se levanta con el mismo protocolo, genera un acta nueva con
 folio consecutivo y deja sin efecto la presente en lo modificado. Ningún
 acuerdo verbal, mensaje de chat o correo sustituye al acta firmada.
 
+## 5. Cláusula de acceso para soporte (Fase 8)
+
+El cliente autoriza al operador Liah a acceder a su cuenta (panel, configuración,
+conversaciones y registros técnicos) **exclusivamente para fines de soporte**:
+diagnóstico de fallas, ajustes de configuración contratados y verificación del
+servicio. El acceso queda registrado en la bitácora de auditoría del sistema
+con fecha, operador y motivo. El operador no divulgará ni usará con otros fines
+la información de los clientes del negocio.
+
+El cliente puede revocar esta autorización por escrito; la revocación no afecta
+los accesos ya registrados y puede limitar la capacidad de dar soporte remoto
+(se atenderá por llamada o visita con costo).
+
+- [ ] El cliente acepta la cláusula de acceso para soporte.
+- [ ] El cliente la rechaza (el soporte se dará por otros medios).
+
 ---
 
 ## 6. Regla de cierre del levantamiento (checklist del instalador)
