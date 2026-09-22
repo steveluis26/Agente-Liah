@@ -43,9 +43,12 @@ from app.core.profile_schema import (
 from app.models import (
     AutomationRule,
     PlatformUser,
+    Resource,
+    ServiceType,
     Template,
     Tenant,
     TenantConfig,
+    TenantPrivacyTerms,
 )
 from app.models.platform_users import ROLE_TENANT_ADMIN, hash_password
 
@@ -227,7 +230,52 @@ async def onboard_tenant(
                 )
             )
 
-        # 8) Conocimiento semilla con el embedder del tenant (sin commit:
+        # 8) Fase 7b: recursos, tipos de servicio y términos de privacidad
+        # del perfil (todo en la misma transacción).
+        for rec in perfil.resources:
+            session.add(
+                Resource(
+                    tenant_id=tenant.id,
+                    slug=rec.slug,
+                    nombre=rec.nombre,
+                    tipo=rec.tipo,
+                    movilidad=rec.movilidad,
+                    capacidad=rec.capacidad,
+                    especialidad=rec.especialidad,
+                )
+            )
+        for st in perfil.service_types:
+            session.add(
+                ServiceType(
+                    tenant_id=tenant.id,
+                    slug=st.slug,
+                    nombre=st.nombre,
+                    duracion_min=st.duracion_min,
+                    recursos_requeridos=[
+                        req.model_dump(
+                            exclude_none=True,
+                            # En la forma {"recurso": slug} la cantidad no
+                            # aplica (vive en el recurso): se excluye para que
+                            # el snapshot sea fiel al perfil declarado.
+                            exclude={"cantidad"} if req.recurso else set(),
+                        )
+                        for req in st.recursos
+                    ],
+                    buffers=st.buffers_min.model_dump(),
+                    traslado=st.traslado.model_dump(),
+                )
+            )
+        if perfil.privacy_terms is not None:
+            session.add(
+                TenantPrivacyTerms(
+                    tenant_id=tenant.id,
+                    version=perfil.privacy_terms.version,
+                    titulo=perfil.privacy_terms.titulo,
+                    texto=perfil.privacy_terms.texto,
+                )
+            )
+
+        # 9) Conocimiento semilla con el embedder del tenant (sin commit:
         #    viaja en la transacción del onboarding).
         if embedder is None:
             routing_for_factory = dict(routing)
@@ -240,7 +288,7 @@ async def onboard_tenant(
                 commit=False,
             )
 
-        # 9) tenant_admin del panel (password hasheado, jamás en claro).
+        # 10) tenant_admin del panel (password hasheado, jamás en claro).
         session.add(
             PlatformUser(
                 email=admin_email,
@@ -275,6 +323,13 @@ async def onboard_tenant(
             "reglas": len(perfil.reglas),
             "plantillas_hsm": len(perfil.plantillas_hsm),
             "conocimiento_items": len(perfil.conocimiento_semilla),
+            "recursos": len(perfil.resources),
+            "tipos_servicio": len(perfil.service_types),
+            "privacy_terms": (
+                perfil.privacy_terms.version
+                if perfil.privacy_terms is not None
+                else None
+            ),
         },
     }
 

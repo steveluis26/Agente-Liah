@@ -23,7 +23,7 @@ REAL_TOOLS = {t["function"]["name"] for t in build_tools()}
 def test_all_templates_load_and_validate():
     for name in TEMPLATES:
         perfil = load_template(f"templates/{name}.yaml")
-        assert perfil.schema_version == "1.0"
+        assert perfil.schema_version in ("1.0", "1.1")
         assert perfil.giro == name
         assert perfil.slug
         assert len(perfil.system_prompt) >= 20

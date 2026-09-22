@@ -42,6 +42,10 @@ class Contact(Base, TenantMixin):
     marketing_opt_in_source: Mapped[str | None] = mapped_column(
         String(20)
     )  # keyword|panel|import|onboarding
+    # Fase 7b: versión de los términos de privacidad que el contacto aceptó
+    # desde el primer mensaje (NULL = no aceptada). Se compara contra
+    # tenant_privacy_terms.version: una versión nueva exige re-aceptar.
+    privacy_terms_version: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(
         server_default=text("now()"), nullable=False
     )

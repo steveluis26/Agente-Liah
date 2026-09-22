@@ -24,7 +24,7 @@
 # de mensualidad se declara como regla `custom` DESHABILITADA: pendiente de
 # implementarse en el scheduler (fase 6). No se inventa un tipo que el
 # código no entienda.
-schema_version: "1.0"
+schema_version: "1.1"
 giro: academia_danza
 slug: academia-ejemplo
 nombre: "Academia Ejemplo"
@@ -129,3 +129,59 @@ politicas:
     - "quejas sobre profesores o clases"
     - "la persona pide hablar con alguien"
   consentimiento_recordatorios: true
+
+# ── Fase 7b: recursos, tipos de servicio y términos de privacidad ─────────
+resources:
+  - slug: salon-a
+    nombre: "Salón A"
+    tipo: room
+    movilidad: fixed
+    capacidad: 20
+  - slug: salon-b
+    nombre: "Salón B"
+    tipo: room
+    movilidad: fixed
+    capacidad: 15
+  - slug: instructor-hiphop
+    nombre: "Instructor de hip-hop"
+    tipo: specialist
+    movilidad: fixed
+    capacidad: 1
+    especialidad: "hip-hop"
+  - slug: instructora-ballet
+    nombre: "Instructora de ballet"
+    tipo: specialist
+    movilidad: fixed
+    capacidad: 1
+    especialidad: "ballet"
+
+service_types:
+  - slug: clase-prueba
+    nombre: "Clase de prueba gratuita"
+    duracion_min: 60
+    recursos:
+      - tipo: room
+        cantidad: 1
+      - tipo: specialist
+        cantidad: 1
+    buffers_min: {setup: 0, teardown: 10}
+    traslado: {modo: none}
+  - slug: clase-muestra-infantil
+    nombre: "Clase muestra infantil"
+    duracion_min: 45
+    recursos:
+      - recurso: instructora-ballet
+      - recurso: salon-a
+    buffers_min: {setup: 10, teardown: 10}
+    traslado: {modo: none}
+
+privacy_terms:
+  version: "1.0"
+  titulo: "Aviso de privacidad y consentimiento — Academia Ejemplo"
+  texto: |
+    Al escribirnos por este chat aceptas que Academia Ejemplo use tu nombre,
+    teléfono y los datos de tu clase de prueba (fecha y hora) para agendar,
+    confirmar y recordarte tu clase. Si inscribes a un menor de edad,
+    declaras ser su padre, madre o tutor legal. No compartimos tus datos con
+    terceros con fines publicitarios. Puedes pedir en cualquier momento que
+    dejemos de escribirte respondiendo "BAJA".

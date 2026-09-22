@@ -11,7 +11,7 @@
 #   3. Handoff: urgencias o temas sensibles -> humano (ver politicas).
 # Valor diferencial: recordatorios 24h y 2h antes (con consentimiento) para
 # reducir inasistencias.
-schema_version: "1.0"
+schema_version: "1.1"
 giro: consultorio_medico
 slug: clinica-ejemplo
 nombre: "Clínica Ejemplo Norte"
@@ -125,3 +125,85 @@ politicas:
     - "recetas, dosis o medicamentos"
     - "el paciente pide hablar con una persona"
   consentimiento_recordatorios: true
+
+# ── Fase 7b: recursos, tipos de servicio y términos de privacidad ─────────
+resources:
+  - slug: consultorio-1
+    nombre: "Consultorio 1"
+    tipo: room
+    movilidad: fixed
+    capacidad: 1
+  - slug: consultorio-2
+    nombre: "Consultorio 2"
+    tipo: room
+    movilidad: fixed
+    capacidad: 1
+  - slug: medico-general
+    nombre: "Médico general"
+    tipo: specialist
+    movilidad: fixed
+    capacidad: 1
+    especialidad: "medicina general"
+  - slug: pediatra
+    nombre: "Pediatra"
+    tipo: specialist
+    movilidad: fixed
+    capacidad: 1
+    especialidad: "pediatría"
+  - slug: electrocardiografo
+    nombre: "Electrocardiógrafo"
+    tipo: equipment
+    movilidad: fixed
+    capacidad: 1
+
+service_types:
+  - slug: consulta-medicina-general
+    nombre: "Consulta de medicina general"
+    duracion_min: 30
+    recursos:
+      - recurso: medico-general
+      - tipo: room
+        cantidad: 1
+    buffers_min: {setup: 0, teardown: 0}
+    traslado: {modo: none}
+  - slug: consulta-pediatria
+    nombre: "Consulta de pediatría"
+    duracion_min: 30
+    recursos:
+      - recurso: pediatra
+      - tipo: room
+        cantidad: 1
+    buffers_min: {setup: 0, teardown: 0}
+    traslado: {modo: none}
+  - slug: electrocardiograma
+    nombre: "Electrocardiograma"
+    duracion_min: 20
+    recursos:
+      - recurso: electrocardiografo
+      - tipo: specialist
+        cantidad: 1
+    buffers_min: {setup: 5, teardown: 5}
+    traslado: {modo: none}
+  - slug: chequeo-anual
+    nombre: "Chequeo general anual"
+    duracion_min: 60
+    recursos:
+      - tipo: specialist
+        cantidad: 1
+      - tipo: room
+        cantidad: 1
+      - tipo: equipment
+        cantidad: 1
+    buffers_min: {setup: 10, teardown: 10}
+    traslado: {modo: none}
+
+privacy_terms:
+  version: "1.0"
+  titulo: "Aviso de privacidad y consentimiento — Clínica Ejemplo Norte"
+  texto: |
+    Al escribirnos por este chat aceptas que Clínica Ejemplo Norte use tu
+    nombre, teléfono y los datos de tu cita (fecha, hora y servicio) para
+    agendar, confirmar y recordarte tus citas, así como para dar seguimiento
+    a tu atención. No compartimos tus datos con terceros con fines
+    publicitarios. Puedes pedir en cualquier momento que dejemos de
+    escribirte o que eliminemos tus datos respondiendo "BAJA".

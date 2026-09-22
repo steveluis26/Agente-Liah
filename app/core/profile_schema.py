@@ -1,8 +1,17 @@
-"""Schema del perfil declarativo de giro (Fase 4).
+"""Schema del perfil declarativo de giro (Fase 4, extendido en Fase 7b).
 
 Un "perfil" es el YAML versionado en `templates/<giro>.yaml`: todo lo que
 define a un cliente (giro, tono, horarios, herramientas, reglas, plantillas
 HSM, conocimiento semilla, políticas) SIN tocar código.
+
+Fase 7b (schema 1.1) agrega tres secciones declarativas:
+- `resources`: recursos reservables del negocio (salas, especialistas,
+  equipo, personal), con movilidad fija o móvil.
+- `service_types`: tipos de servicio con duración, recursos requeridos,
+  buffers (setup/teardown) y política de traslado (clave para negocios
+  móviles que atienden eventos en distintas sedes).
+- `privacy_terms`: términos de privacidad que el contacto acepta desde el
+  primer mensaje (se guardan con versión y fecha).
 
 Validación estricta (`extra="forbid"` en todos los modelos): una clave
 desconocida es error, no se guarda en silencio. `load_template()` lee y
@@ -17,7 +26,7 @@ from zoneinfo import ZoneInfo
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 # Raíz del repo = dos niveles arriba de app/core/.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -82,10 +91,143 @@ class Politicas(_Strict):
     consentimiento_recordatorios: bool = True
 
 
+# ── Fase 7b: recursos, tipos de servicio y términos de privacidad ────────
+
+TIPO_RECURSO = Literal["room", "specialist", "equipment", "staff"]
+MODO_TRASLADO = Literal["none", "fixed", "per_zone"]
+
+
+class Recurso(_Strict):
+    """Un recurso reservable del negocio (sala, especialista, equipo,
+    personal). Los fijos viven en una sede; los móviles se desplazan
+    (negocios de eventos: el recurso viaja con el servicio)."""
+
+    slug: str = Field(min_length=2, max_length=60)
+    nombre: str = Field(min_length=1, max_length=120)
+    tipo: TIPO_RECURSO
+    movilidad: Literal["fixed", "mobile"] = "fixed"
+    capacidad: int = Field(default=1, ge=1)
+    especialidad: str | None = Field(default=None, max_length=60)
+
+    @field_validator("slug")
+    @classmethod
+    def _slug(cls, v: str) -> str:
+        if not _SLUG_RE.match(v):
+            raise ValueError(
+                "slug de recurso inválido: solo minúsculas, dígitos y "
+                "guiones, sin guion al inicio/fin"
+            )
+        return v
+
+
+class BuffersMin(_Strict):
+    """Minutos de preparación/limpieza alrededor del servicio."""
+
+    setup: int = Field(default=0, ge=0)
+    teardown: int = Field(default=0, ge=0)
+
+
+class Traslado(_Strict):
+    """Política de traslado para negocios móviles.
+
+    - none: sin traslado (negocio fijo o servicio en sede del cliente sin
+      costo de tiempo).
+    - fixed: minutos fijos de traslado por servicio (`fixed_min` requerido).
+    - per_zone: minutos por zona (`zonas` no vacío); `default_min` aplica a
+      zonas no listadas.
+    """
+
+    modo: MODO_TRASLADO = "none"
+    fixed_min: int | None = Field(default=None, gt=0)
+    default_min: int = Field(default=60, ge=0)
+    zonas: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _modo_coherente(self):
+        if self.modo == "fixed" and self.fixed_min is None:
+            raise ValueError(
+                "traslado.fixed_min es requerido cuando modo='fixed'"
+            )
+        if self.modo == "per_zone":
+            if not self.zonas:
+                raise ValueError(
+                    "traslado.zonas no puede estar vacío cuando "
+                    "modo='per_zone'"
+                )
+            for zona, mins in self.zonas.items():
+                if mins < 0:
+                    raise ValueError(
+                        f"traslado.zonas[{zona!r}]: los minutos no pueden "
+                        "ser negativos"
+                    )
+        return self
+
+
+class RecursoRequerido(_Strict):
+    """Un requerimiento de recurso dentro de un tipo de servicio.
+
+    Discriminación excluyente: o bien se referencia UN recurso concreto por
+    slug ({"recurso": "<slug>"}) o bien se pide una CANTIDAD de recursos de
+    un tipo ({"tipo": <tipo>, "cantidad": N, "especialidad": ...}). Nunca
+    ambas, nunca ninguna.
+    """
+
+    recurso: str | None = None
+    tipo: TIPO_RECURSO | None = None
+    cantidad: int = Field(default=1, ge=1)
+    especialidad: str | None = Field(default=None, max_length=60)
+
+    @model_validator(mode="after")
+    def _discriminar(self):
+        por_slug = self.recurso is not None
+        por_tipo = self.tipo is not None
+        if por_slug == por_tipo:
+            raise ValueError(
+                "recurso requerido inválido: usa exactamente UNA de "
+                "{'recurso': slug} o {'tipo': tipo, ...} (son excluyentes)"
+            )
+        if por_slug and not _SLUG_RE.match(self.recurso):  # type: ignore[arg-type]
+            raise ValueError(
+                f"slug de recurso referenciado inválido: {self.recurso!r}"
+            )
+        return self
+
+
+class TipoServicio(_Strict):
+    """Un servicio que el negocio ofrece/agenda: duración, qué recursos
+    necesita, buffers y política de traslado."""
+
+    slug: str = Field(min_length=2, max_length=60)
+    nombre: str = Field(min_length=1, max_length=120)
+    duracion_min: int = Field(gt=0)
+    recursos: list[RecursoRequerido] = Field(min_length=1)
+    buffers_min: BuffersMin = Field(default_factory=BuffersMin)
+    traslado: Traslado = Field(default_factory=Traslado)
+
+    @field_validator("slug")
+    @classmethod
+    def _slug(cls, v: str) -> str:
+        if not _SLUG_RE.match(v):
+            raise ValueError(
+                "slug de tipo de servicio inválido: solo minúsculas, "
+                "dígitos y guiones, sin guion al inicio/fin"
+            )
+        return v
+
+
+class PrivacyTerms(_Strict):
+    """Términos de privacidad del tenant: el contacto los acepta desde el
+    primer mensaje y se guardan con versión y fecha (Fase 7b)."""
+
+    version: str = Field(min_length=1, max_length=20)
+    titulo: str = Field(min_length=3, max_length=160)
+    texto: str = Field(min_length=20)
+
+
 class PerfilGiro(_Strict):
     """Perfil declarativo completo de un giro de negocio."""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     giro: str = Field(min_length=1, max_length=40)
     # slug sugerido al dar de alta (el onboarding puede sobreescribirlo).
     slug: str = Field(min_length=2, max_length=64)
@@ -100,6 +242,10 @@ class PerfilGiro(_Strict):
     plantillas_hsm: list[PlantillaHSM] = Field(default_factory=list)
     conocimiento_semilla: list[ConocimientoItem] = Field(min_length=1)
     politicas: Politicas = Field(default_factory=Politicas)
+    # Fase 7b (opcionales: los YAML 1.0 sin estas secciones siguen validando).
+    resources: list[Recurso] = Field(default_factory=list)
+    service_types: list[TipoServicio] = Field(default_factory=list)
+    privacy_terms: PrivacyTerms | None = None
     # Override opcional del ruteo comercial default (openai). Se valida con
     # las mismas reglas que PUT /tenants/{id}/config (cero secretos aquí).
     model_routing: dict[str, Any] | None = None
@@ -161,6 +307,31 @@ class PerfilGiro(_Strict):
             raise ValueError(f"plantillas_hsm con nombre duplicado: {sorted(dup)}")
         return self
 
+    @model_validator(mode="after")
+    def _recursos_y_servicios_coherentes(self):
+        # Slugs únicos dentro de cada colección.
+        for coleccion, etiqueta in (
+            (self.resources, "resources"),
+            (self.service_types, "service_types"),
+        ):
+            slugs = [r.slug for r in coleccion]
+            dup = {s for s in slugs if slugs.count(s) > 1}
+            if dup:
+                raise ValueError(
+                    f"{etiqueta} con slug duplicado: {sorted(dup)}"
+                )
+        # Cada {"recurso": slug} debe existir en resources.
+        conocidos = {r.slug for r in self.resources}
+        for st in self.service_types:
+            for req in st.recursos:
+                if req.recurso is not None and req.recurso not in conocidos:
+                    raise ValueError(
+                        f"service_type '{st.slug}': referencia un recurso "
+                        f"inexistente '{req.recurso}' (resources: "
+                        f"{sorted(conocidos) or 'vacío'})"
+                    )
+        return self
+
 
 def load_template(path: str | Path) -> PerfilGiro:
     """Lee un YAML de `templates/` y lo valida contra el schema.
@@ -206,6 +377,9 @@ def list_templates() -> list[dict]:
                 "reglas": len(perfil.reglas),
                 "plantillas": len(perfil.plantillas_hsm),
                 "conocimiento_items": len(perfil.conocimiento_semilla),
+                "recursos": len(perfil.resources),
+                "tipos_servicio": len(perfil.service_types),
+                "privacy_terms": perfil.privacy_terms is not None,
             })
         except ValueError as e:
             out.append({"template": path.stem, "error": str(e)})

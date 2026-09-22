@@ -127,7 +127,7 @@ async def _tenant_count(session) -> int:
 def test_schema_valid_templates():
     p = load_template(CLINIC_YAML)
     assert p.giro == "consultorio_medico"
-    assert p.schema_version == "1.0"
+    assert p.schema_version in ("1.0", "1.1")
     assert len(p.conocimiento_semilla) >= 1
     assert "book_appointment" in p.herramientas_habilitadas
     e = load_template(ESTETICA_YAML)

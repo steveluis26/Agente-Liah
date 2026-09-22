@@ -29,6 +29,11 @@ class Appointment(Base, TenantMixin):
     end_at: Mapped[datetime | None] = mapped_column()
     status: Mapped[str] = mapped_column(String(20), default="confirmed", nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    # Fase 7b: qué tipo de servicio se agenda (slug de service_types; NULL
+    # para citas legacy o agendadas sin tipo) y dónde se realiza (sede/
+    # ubicación del evento; NULL en negocios fijos).
+    service_type_slug: Mapped[str | None] = mapped_column(String(60))
+    venue: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(
         server_default=text("now()"), nullable=False
     )

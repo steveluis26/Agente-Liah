@@ -23,7 +23,7 @@
 # `followup_30d` y `custom`. El recordatorio de pago de colegiatura se declara
 # como regla `custom` DESHABILITADA: pendiente de implementarse en el
 # scheduler (fase 6). No se inventa un tipo que el código no entienda.
-schema_version: "1.0"
+schema_version: "1.1"
 giro: escuela_privada
 slug: escuela-ejemplo
 nombre: "Escuela Ejemplo"
@@ -141,3 +141,51 @@ politicas:
     - "temas disciplinarios o expulsiones"
     - "el padre de familia pide hablar con una persona"
   consentimiento_recordatorios: true
+
+# ── Fase 7b: recursos, tipos de servicio y términos de privacidad ─────────
+resources:
+  - slug: sala-juntas
+    nombre: "Sala de juntas"
+    tipo: room
+    movilidad: fixed
+    capacidad: 12
+  - slug: auditorio
+    nombre: "Auditorio"
+    tipo: room
+    movilidad: fixed
+    capacidad: 100
+  - slug: asesor-admisiones
+    nombre: "Asesor de admisiones"
+    tipo: staff
+    movilidad: fixed
+    capacidad: 1
+
+service_types:
+  - slug: visita-informativa
+    nombre: "Visita informativa"
+    duracion_min: 60
+    recursos:
+      - recurso: asesor-admisiones
+      - tipo: room
+        cantidad: 1
+    buffers_min: {setup: 0, teardown: 0}
+    traslado: {modo: none}
+  - slug: recorrido-escolar
+    nombre: "Recorrido escolar guiado"
+    duracion_min: 90
+    recursos:
+      - recurso: asesor-admisiones
+      - recurso: auditorio
+    buffers_min: {setup: 15, teardown: 0}
+    traslado: {modo: none}
+
+privacy_terms:
+  version: "1.0"
+  titulo: "Aviso de privacidad y consentimiento — Escuela Ejemplo"
+  texto: |
+    Al escribirnos por este chat aceptas que Escuela Ejemplo use tu nombre,
+    teléfono y los datos de tu visita (fecha y hora) para agendar, confirmar
+    y recordarte tu visita informativa. Si compartes datos de un menor de
+    edad, declaras ser su padre, madre o tutor legal. No compartimos tus
+    datos con terceros con fines publicitarios. Puedes pedir en cualquier
+    momento que dejemos de escribirte respondiendo "BAJA".

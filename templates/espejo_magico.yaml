@@ -1,0 +1,182 @@
+# Perfil declarativo del giro: ESPEJO MÁGICO DE FOTOS PARA EVENTOS (Fase 7b).
+#
+# Negocio MÓVIL y FICTICIO: ningún nombre, dirección o precio corresponde a
+# un negocio real. El espejo mágico (cabina fotográfica interactiva) viaja
+# a la sede del evento, por eso los recursos son `mobile` y los tipos de
+# servicio declaran buffers de montaje/desmontaje y traslado por zona.
+#
+# Rutas que cierra:
+#   1. Conocimiento: paquetes, precios, zonas de cobertura (RAG).
+#   2. Acción: agendar/cancelar/reprogramar rentas para eventos
+#      (book_appointment con venue = sede del evento).
+#   3. Handoff: eventos fuera de zona o requisitos especiales -> humano.
+#   4. Recordatorios 48 h y 24 h antes (con consentimiento).
+schema_version: "1.1"
+giro: espejo_magico
+slug: espejo-ejemplo
+nombre: "Espejo Ejemplo para Eventos"
+timezone: "America/Mexico_City"
+locale: "es-MX"
+
+system_prompt: |
+  Eres Liah, la asistente virtual de Espejo Ejemplo para Eventos. Tu tono es
+  divertido y entusiasta: hablas de tú y contagias la emoción del evento.
+  Respondes preguntas sobre paquetes del espejo mágico de fotos, precios,
+  duración del servicio y zonas de cobertura usando la base de conocimiento;
+  si no sabes algo, lo dices y ofreces ayuda.
+  Puedes agendar, cancelar y reprogramar rentas para eventos verificando
+  disponibilidad. SIEMPRE preguntas la fecha, el horario, la sede del evento
+  (venue) y el tipo de evento antes de confirmar: el equipo viaja a la sede
+  y el traslado depende de la zona.
+  Si el evento es fuera de las zonas de cobertura o piden algo que no
+  ofreces, escalas a un humano con escalate_to_human.
+
+tono: "divertido-entusiasta"
+
+horarios:
+  monday: {open: "09:00", close: "20:00"}
+  tuesday: {open: "09:00", close: "20:00"}
+  wednesday: {open: "09:00", close: "20:00"}
+  thursday: {open: "09:00", close: "20:00"}
+  friday: {open: "09:00", close: "20:00"}
+  saturday: {open: "09:00", close: "22:00"}
+  sunday: {open: "09:00", close: "20:00"}
+
+herramientas_habilitadas:
+  - search_knowledge_base
+  - check_availability
+  - book_appointment
+  - cancel_appointment
+  - reschedule_appointment
+  - escalate_to_human
+
+reglas:
+  - tipo: appointment_reminder
+    enabled: true
+    params:
+      hours_before: [48, 24]
+      template_name: recordatorio_evento
+      require_consent: true
+  - tipo: custom
+    enabled: false
+    params:
+      descripcion: "Seguimiento post-evento para pedir fotos del evento (pendiente de implementar en el scheduler)"
+      days_after: 2
+      template_name: seguimiento_evento
+
+plantillas_hsm:
+  - nombre: recordatorio_evento
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, te recordamos tu renta del espejo mágico el {{2}} a las {{3}} en {{4}}. El equipo llega con anticipación para el montaje. ¡Será increíble!"
+    variables: ["nombre", "fecha", "hora", "sede"]
+  - nombre: confirmacion_evento
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, tu renta del espejo mágico quedó agendada para el {{2}} a las {{3}} en {{4}}. Te contactaremos un día antes para confirmar el acceso a la sede."
+    variables: ["nombre", "fecha", "hora", "sede"]
+  - nombre: aviso_cancelacion
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, tu renta del {{2}} en {{3}} quedó cancelada. Si deseas reagendar, escríbenos."
+    variables: ["nombre", "fecha", "sede"]
+  - nombre: seguimiento_evento
+    categoria: utility
+    idioma: es
+    body: "Hola {{1}}, de {{2}}: ¿cómo les fue con el espejo mágico? Si tienes fotos que quieras compartirnos, ¡nos encantaría verlas!"
+    variables: ["nombre", "negocio"]
+
+conocimiento_semilla:
+  - titulo: "Paquetes y precios"
+    contenido: |
+      Paquetes de Espejo Ejemplo para Eventos (precios en pesos mexicanos, IVA incluido; negocio de ejemplo):
+      - Renta 3 horas (espejo mágico + impresiones ilimitadas + animador): $4,500 MXN.
+      - Renta 5 horas (espejo mágico + impresiones ilimitadas + animador + libro de firmas digital): $6,800 MXN.
+      - Hora extra: $1,200 MXN.
+      El montaje y desmontaje están incluidos. Se requiere un anticipo del 30% para apartar la fecha.
+  - titulo: "Zonas de cobertura y traslado"
+    contenido: |
+      Cobertura: misma sede (el evento es donde opera el negocio): sin costo de traslado;
+      misma ciudad: 30 minutos de traslado incluidos; otra ciudad: 90 minutos de
+      traslado más viáticos. Fuera de estas zonas se cotiza por separado.
+      El servicio se agenda con al menos 7 días de anticipación.
+  - titulo: "Qué necesita el negocio de la sede"
+    contenido: |
+      Para el montaje se necesita: un espacio de 2x2 metros techado, un contacto
+      eléctrico cercano y acceso para carga y descarga. El equipo llega 45 minutos
+      antes del inicio del servicio. Al terminar, el desmontaje toma 30 minutos.
+
+politicas:
+  escalamiento: "Escalar a humano si el evento es fuera de las zonas de cobertura, si piden un servicio no listado o si el cliente quiere hablar con una persona."
+  temas_sensibles:
+    - "el cliente pide hablar con una persona"
+    - "eventos fuera de la zona de cobertura"
+    - "reclamaciones sobre un servicio realizado"
+  consentimiento_recordatorios: true
+
+# ── Fase 7b: recursos móviles, tipos de servicio y términos de privacidad ─
+resources:
+  - slug: espejo-magico
+    nombre: "Espejo mágico"
+    tipo: equipment
+    movilidad: mobile
+    capacidad: 1
+  - slug: impresora-fotos
+    nombre: "Impresora de fotos"
+    tipo: equipment
+    movilidad: mobile
+    capacidad: 1
+  - slug: animador
+    nombre: "Animador"
+    tipo: staff
+    movilidad: mobile
+    capacidad: 1
+  - slug: tecnico
+    nombre: "Técnico"
+    tipo: staff
+    movilidad: mobile
+    capacidad: 1
+
+service_types:
+  - slug: renta-espejo-3h
+    nombre: "Renta de espejo mágico 3 horas"
+    duracion_min: 180
+    recursos:
+      - recurso: espejo-magico
+      - recurso: impresora-fotos
+      - recurso: animador
+    buffers_min: {setup: 45, teardown: 30}
+    traslado:
+      modo: per_zone
+      default_min: 60
+      zonas:
+        misma_sede: 0
+        misma_ciudad: 30
+        otra_ciudad: 90
+  - slug: renta-espejo-5h
+    nombre: "Renta de espejo mágico 5 horas"
+    duracion_min: 300
+    recursos:
+      - tipo: equipment
+        cantidad: 2
+      - tipo: staff
+        cantidad: 2
+    buffers_min: {setup: 60, teardown: 30}
+    traslado:
+      modo: per_zone
+      default_min: 60
+      zonas:
+        misma_sede: 0
+        misma_ciudad: 30
+        otra_ciudad: 90
+
+privacy_terms:
+  version: "1.0"
+  titulo: "Aviso de privacidad y consentimiento — Espejo Ejemplo para Eventos"
+  texto: |
+    Al escribirnos por este chat aceptas que Espejo Ejemplo para Eventos use
+    tu nombre, teléfono y los datos de tu evento (fecha, horario y sede)
+    para agendar, confirmar y coordinar el montaje del servicio. Las fotos
+    tomadas en el evento se entregan solo a tus invitados y no se publican
+    sin tu autorización. Puedes pedir en cualquier momento que dejemos de
+    escribirte respondiendo "BAJA".
