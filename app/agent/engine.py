@@ -9,7 +9,8 @@ El motor es GENÉRICO: prohibido hardcodear literales de cualquier vertical
 canal (WhatsApp u otro). Todo lo variable por negocio vive en la config del
 tenant (`tenant_configs.extra`):
   - kb_triggers: lista de palabras que fuerzan la consulta RAG.
-  - sensitive_keywords: lista de palabras que disparan escalación automática.
+  - sensitive_keywords (o `temas_sensibles`, como lo guarda el onboarding):
+    lista de palabras/frases que disparan escalación automática.
   - enabled_tools: subconjunto del catálogo de tools (por tier).
 
 Pilares de la arquitectura (no confiar ciegamente en el LLM):
@@ -222,8 +223,15 @@ async def run_agent(
     )
     policy = dict(cfg.extra or {}) if cfg else {}
     kb_triggers = tuple(policy.get("kb_triggers") or DEFAULT_KB_TRIGGERS)
+    # Fase 5: el onboarding (Fase 4) guarda la lista del perfil como
+    # `temas_sensibles`; también se acepta `sensitive_keywords` (nombre que
+    # usa la documentación del engine). Sin este fallback, los tenants dados
+    # de alta por plantilla NUNCA disparaban la escalación automática.
     sensitive_keywords = tuple(
-        kw.lower() for kw in (policy.get("sensitive_keywords") or [])
+        kw.lower()
+        for kw in (
+            policy.get("sensitive_keywords") or policy.get("temas_sensibles") or []
+        )
     )
     enabled_tools = policy.get("enabled_tools")  # None = catálogo completo
     tools = toolmod.build_tools(enabled_tools)

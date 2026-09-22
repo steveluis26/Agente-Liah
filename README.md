@@ -2,12 +2,78 @@
 
 > El asistente de WhatsApp que atiende, agenda y da seguimiento a los clientes de tu pyme, 24/7 y con tu tono.
 
-Scaffold de grado producción multi-tenant (FastAPI async + PostgreSQL/pgvector): un solo
-motor de agente parametrizado por negocio, para academias de danza, escuelas, barberías y
-consultorios. Fase 0 = tubería de entrada (Webhook → Seguridad → Identificación de Tenant →
-Persistencia). Fase 1+ = motor de agente (RAG + tool-calling) y calendario como fuente de verdad.
+Esqueleto **multi-tenant** de grado producción (FastAPI async +
+PostgreSQL/pgvector): un solo motor de agente parametrizado por negocio,
+dado de alta con una plantilla declarativa por giro (`templates/<giro>.yaml`).
+Vertical objetivo: **consultorios médicos** (conocimiento, agenda,
+handoff ante urgencias, recordatorios). Estado: **5 fases completas**,
+101 tests verdes, demo end-to-end `DEMO OK (4/4 rutas)`.
 
-## Levantar en local (Mac, con Docker)
+## Quickstart (5 minutos)
+
+```bash
+# 1. Crea .env a partir del ejemplo y ajústalo (DATABASE_URL, secretos)
+cp .env.example .env
+
+# 2. Levanta todo: postgres -> BD -> migraciones -> api + worker
+make up
+
+# 3. Crea el primer operador del panel
+make seed-admin   # LIAH_ADMIN_PASSWORD=<redacted> o prompt
+
+# 4. Da de alta un cliente desde la plantilla del giro
+make onboard TENANT=clinica-ejemplo TEMPLATE=consultorio_medico
+
+# 5. Corre la demo end-to-end (4 rutas: conocimiento, agenda, handoff,
+#    recordatorios) contra su propia BD (pyme_agent_demo)
+make demo
+
+# 6. Tests (BD pyme_agent_test, sin proxies)
+make test
+
+# Detener api + worker
+make down
+```
+
+Sin Docker: `make up` verifica `pg_isready` en `127.0.0.1:5433` y te dice
+exactamente qué instalar si Postgres no responde.
+
+## Arquitectura en 10 líneas
+
+1. **Entrada**: webhook de WhatsApp verifica firma HMAC, responde 200 de
+   inmediato y encola el trabajo en `webhook_jobs` (cola persistente en BD).
+2. **Worker** (`python -m app.worker`): drena la cola y corre el scheduler
+   de recordatorios; en dev el scheduler puede ir in-process (`app/main.py`).
+3. **Motor** (`app/agent/engine.py`): loop de tool-calling con 3 guards que
+   no confían en el LLM — RAG forzado ante preguntas, anti-doble-agenda
+   contra la fuente de verdad, y escalación automática que **crea** el
+   `Handoff` (temas sensibles, baja confianza, iteraciones agotadas).
+4. **Canales** detrás del contrato `ChannelAdapter` (hoy WhatsApp; mañana
+   Instagram/Facebook sin tocar el motor).
+5. **Conocimiento**: RAG con pgvector + índice HNSW, filtro duro por
+   `tenant_id`, umbral único 0.75.
+6. **Acciones idempotentes**: `book_appointment`/`cancel`/`reschedule` y
+   envíos deduplican por `idempotency_key` + constraints únicos en BD.
+7. **Tenancy**: `tenant_id` NOT NULL en todas las tablas, obligatorio en la
+   capa de datos; alta declarativa por plantilla versionada (Fase 4).
+8. **Comercial**: LLM y API key **por tenant** (OpenAI; Ollama en dev),
+   costeo por turno en `usage_records` visible en el panel.
+9. **Panel** (`/admin`): login JWT con roles, bandeja de handoffs, config
+   por tenant, métricas y costo por conversación.
+10. **Recordatorios**: reglas por tenant (`appointment_reminder` 24 h/2 h),
+    consentimiento LFPDPPP, idempotencia por `reminder_log`.
+
+## Docs
+
+- `docs/GUIA_ALTA.md` — checklist de instalación 2–5 días para un cliente
+  nuevo (perfil → onboard → conocimiento → HSM de Meta → pruebas → entrega)
+  + matriz de costos + alcance.
+- `docs/DECISIONES_FASE1.md` … `docs/DECISIONES_FASE5.md` — decisiones por
+  fase (qué se hizo, por qué, y qué quedó pendiente honestamente).
+- `../CHANGE_MAP.md` — mapa de cambios y checklist de aceptación del
+  esqueleto.
+
+## Levantar en local (manual, sin make)
 
 ```bash
 # 1. Crea .env a partir del ejemplo
@@ -167,9 +233,23 @@ Los `templates/<giro>.yaml` son la fuente de verdad versionada del giro
 quedan registradas como pendientes de aprobación en Meta: créalas/apruébalas
 en el panel de Meta antes de activar recordatorios reales.
 
-## Siguiente fase
+## Estado final del esqueleto (Fase 5 completada)
 
-Fase 5: demo end-to-end del consultorio médico (conocimiento + agenda/
-cancelación/reprogramación + handoff, recordatorios 24h/2h) con instalación
-reproducible (`make up`: API + worker + migraciones desde cero). No heredar
-`scripts/legacy/demo_academia.py`: sus PASS son engañosos.
+- **Fase 1** — Motor endurecido: idempotencia (wamid, action_log, constraints
+  únicos), cola persistente, guards RAG/anti-doble-agenda/escalación real.
+- **Fase 2** — Conector OpenAI comercial por tenant + costeo por turno
+  (`usage_records`, visible en el panel).
+- **Fase 3** — Panel mínimo: login JWT con roles, bandeja de handoffs,
+  config por tenant, métricas y costo por conversación.
+- **Fase 4** — Alta por perfil declarativo: `templates/<giro>.yaml` +
+  onboarding transaccional (CLI, API y panel usan el mismo servicio).
+- **Fase 5** — Demo end-to-end del consultorio (`scripts/demo_consultorio.py`,
+  `DEMO OK (4/4 rutas)`), worker de fondo (`python -m app.worker`),
+  `Makefile` (`up/down/migrate/test/onboard/demo/seed-admin`) y
+  `docs/GUIA_ALTA.md`.
+
+**Pendiente (Fase 6+)**: empaque comercial (Dockerfiles, compose
+api+worker+migrate, `uv.lock`, `docs/DEPLOY.md`), RLS/defensa en
+profundidad del aislamiento, aviso de privacidad y revocación (LFPDPPP),
+canales Instagram/Facebook, y verificación con Meta real (aprobación de
+HSM y envíos fuera de dry-run). Ver `docs/DECISIONES_FASE5.md`.

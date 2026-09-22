@@ -1,4 +1,11 @@
-"""FastAPI app — punto de entrada Fase 0 + Fase 1 + Fase 2 (scheduler)."""
+"""FastAPI app — punto de entrada Fase 0–5.
+
+Scheduler de recordatorios: en DEV puede correr in-process vía el lifespan
+(`ENABLE_REMINDER_SCHEDULER=true`). En PRODUCCIÓN se usa el worker dedicado
+(`python -m app.worker`, ver `app/worker.py`) con el in-process apagado: si
+ambos corren, los recordatorios se evaluarían dos veces (la idempotencia por
+`reminder_log` evita duplicados, pero es desperdicio).
+"""
 import logging
 
 from contextlib import asynccontextmanager
@@ -61,7 +68,7 @@ def _scheduler_enabled() -> bool:
     return os.getenv("ENABLE_REMINDER_SCHEDULER", "false").lower() == "true"
 
 
-app = FastAPI(title="Agente Liah", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Agente Liah", version="0.5.0", lifespan=lifespan)
 
 app.include_router(whatsapp_router)
 app.include_router(knowledge_router)
@@ -73,4 +80,4 @@ app.include_router(admin_ui_router)  # UI server-rendered: /admin
 
 @app.get("/health", tags=["health"])
 async def health():
-    return {"status": "ok", "phase": "4"}
+    return {"status": "ok", "phase": "5"}

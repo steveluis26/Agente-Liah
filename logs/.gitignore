@@ -1,0 +1,5 @@
+# Logs de runtime (make up/down): no se commitean.
+*.log
+*.pid
+# Los .txt de evidencia de demos viejas se archivaron en ../logs-archive/
+*.txt

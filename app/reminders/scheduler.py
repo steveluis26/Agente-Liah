@@ -10,6 +10,7 @@ Idempotencia doble:
 import asyncio
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -30,6 +31,11 @@ async def run_once(dry_run: bool = False):
         tenants = (await session.execute(select(Tenant))).scalars().all()
 
     for tenant in tenants:
+        # Las citas se guardan naive en hora LOCAL del tenant (convención del
+        # calendario): el "ahora" debe calcularse en esa misma zona, no en
+        # UTC. Si no, un recordatorio "2h antes" jamás dispara para citas del
+        # mismo día en zonas UTC-6 como America/Mexico_City.
+        now = _tenant_now(getattr(tenant, "timezone", None))
         async with db_mod.async_session_maker() as session:
             # marca last_run de reglas activas
             rules = (
@@ -40,7 +46,6 @@ async def run_once(dry_run: bool = False):
                     )
                 )
             ).scalars().all()
-            now = datetime.utcnow()
             for rule in rules:
                 targets = await dispatch.load_rule_targets(
                     session, tenant.id, tenant.name, rule.type, now
@@ -102,6 +107,22 @@ async def _job_wrapper():
         await run_once(dry_run=False)
     except Exception:  # noqa: BLE001 - el scheduler no debe morir
         logger.exception("Error en job de recordatorios")
+
+
+def _tenant_now(tz_name: str | None) -> datetime:
+    """`now` naive en la zona del tenant (convención del calendario).
+
+    Las citas (`appointments.start_at`) se guardan naive en hora local del
+    tenant; comparar contra `utcnow()` rompe los recordatorios de corto
+    plazo (ej. "2h antes" nunca dispara en UTC-6 para citas del mismo día).
+    Fallback defensivo a UTC si la zona es inválida.
+    """
+    try:
+        tz = ZoneInfo(tz_name or "UTC")
+    except Exception:  # noqa: BLE001 - zona inválida: no tumbar el cron
+        logger.warning("Zona horaria inválida %r; uso UTC", tz_name)
+        tz = ZoneInfo("UTC")
+    return datetime.now(tz).replace(tzinfo=None)
 
 
 def start_scheduler():
