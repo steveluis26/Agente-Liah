@@ -13,6 +13,7 @@ verificación). Roles: platform_admin (todo), tenant_admin/tenant_agent
 (solo su tenant). Las API keys por tenant (X-Tenant-API-Key) siguen
 sirviendo para webhook/ingesta, no para este panel.
 """
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -37,6 +38,7 @@ from app.core.db import get_session
 from app.models import (
     ActionLog,
     Appointment,
+    AppointmentResource,
     Campaign,
     CampaignSend,
     Contact,
@@ -44,12 +46,16 @@ from app.models import (
     Conversation,
     Handoff,
     Message,
+    Resource,
+    ServiceType,
     Template,
     Tenant,
     TenantConfig,
+    TenantPrivacyTerms,
     UsageMonthly,
     UsageRecord,
 )
+from app.models.resources import RESOURCE_MOBILITY, RESOURCE_TYPES
 from app.models.conversations import (
     MODE_AI,
     MODE_HUMAN,
@@ -345,8 +351,6 @@ WEEKDAYS = (
 
 def _validate_business_hours(value: dict) -> dict:
     """Horarios como {dia: {open: "HH:MM", close: "HH:MM"} | "closed"}."""
-    import re
-
     if not isinstance(value, dict):
         raise ValueError("business_hours debe ser un objeto")
     hhmm = re.compile(r"^\d{2}:\d{2}$")
@@ -811,6 +815,10 @@ async def list_contacts(
                 if c.marketing_opt_in_at else None
             ),
             "marketing_opt_in_source": c.marketing_opt_in_source,
+            # Fase 7d: consentimiento de privacidad visible en el panel.
+            "consent_status": c.consent_status,
+            "consent_at": c.consent_at.isoformat() if c.consent_at else None,
+            "privacy_terms_version": c.privacy_terms_version,
             "tags": tags_by_contact.get(str(c.id), []),
             "last_interaction_at": (
                 c.last_interaction_at.isoformat()
@@ -1216,4 +1224,359 @@ async def get_tenant_metrics(
             ),
             "monthly_total": float(monthly.cost_usd) if monthly else 0.0,
         },
+    }
+
+
+# ── Recursos (Fase 7d) ──────────────────────────────────────────────────
+#
+# Gestión de recursos reservables del tenant (sala, especialista, equipo,
+# personal; fijo o móvil). Solo platform_admin y tenant_admin gestionan
+# recursos: definen qué puede reservar la agenda y por ende qué ofrece el
+# bot. tenant_agent NO gestiona (solo opera sobre lo que existe).
+
+RESOURCE_ADMIN_ROLES = (ROLE_PLATFORM_ADMIN, ROLE_TENANT_ADMIN)
+
+_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$")
+
+
+class ResourceCreate(BaseModel):
+    slug: str = Field(min_length=2, max_length=60)
+    nombre: str = Field(min_length=1, max_length=120)
+    tipo: str
+    movilidad: str = "fixed"
+    capacidad: int = Field(default=1, ge=1)
+    especialidad: str | None = Field(default=None, max_length=60)
+
+    @field_validator("slug")
+    @classmethod
+    def _slug(cls, v):
+        v = v.strip().lower()
+        if not _SLUG_RE.match(v):
+            raise ValueError(
+                "slug inválido: minúsculas, números y guiones (2-60)"
+            )
+        return v
+
+    @field_validator("tipo")
+    @classmethod
+    def _tipo(cls, v):
+        if v not in RESOURCE_TYPES:
+            raise ValueError(
+                f"tipo válido: {' | '.join(RESOURCE_TYPES)}"
+            )
+        return v
+
+    @field_validator("movilidad")
+    @classmethod
+    def _movilidad(cls, v):
+        if v not in RESOURCE_MOBILITY:
+            raise ValueError(
+                f"movilidad válida: {' | '.join(RESOURCE_MOBILITY)}"
+            )
+        return v
+
+    @field_validator("nombre", "especialidad")
+    @classmethod
+    def _non_empty(cls, v):
+        if v is not None and not v.strip():
+            raise ValueError("no puede ser vacío")
+        return v.strip() if v is not None else v
+
+
+class ResourceUpdate(BaseModel):
+    """PUT parcial: solo los campos presentes se actualizan."""
+
+    model_config = {"extra": "forbid"}
+
+    slug: str | None = Field(default=None, min_length=2, max_length=60)
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    tipo: str | None = None
+    movilidad: str | None = None
+    capacidad: int | None = Field(default=None, ge=1)
+    especialidad: str | None = Field(default=None, max_length=60)
+
+    @field_validator("slug")
+    @classmethod
+    def _slug(cls, v):
+        if v is None:
+            return v
+        v = v.strip().lower()
+        if not _SLUG_RE.match(v):
+            raise ValueError(
+                "slug inválido: minúsculas, números y guiones (2-60)"
+            )
+        return v
+
+    @field_validator("tipo")
+    @classmethod
+    def _tipo(cls, v):
+        if v is not None and v not in RESOURCE_TYPES:
+            raise ValueError(
+                f"tipo válido: {' | '.join(RESOURCE_TYPES)}"
+            )
+        return v
+
+    @field_validator("movilidad")
+    @classmethod
+    def _movilidad(cls, v):
+        if v is not None and v not in RESOURCE_MOBILITY:
+            raise ValueError(
+                f"movilidad válida: {' | '.join(RESOURCE_MOBILITY)}"
+            )
+        return v
+
+    @field_validator("nombre", "especialidad")
+    @classmethod
+    def _non_empty(cls, v):
+        if v is not None and not v.strip():
+            raise ValueError("no puede ser vacío")
+        return v.strip() if v is not None else v
+
+
+def _resource_public(r: Resource) -> dict:
+    return {
+        "id": str(r.id),
+        "tenant_id": str(r.tenant_id),
+        "slug": r.slug,
+        "nombre": r.nombre,
+        "tipo": r.tipo,
+        "movilidad": r.movilidad,
+        "capacidad": r.capacidad,
+        "especialidad": r.especialidad,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
+async def _get_scoped_resource(
+    session: AsyncSession, tenant_id: uuid.UUID, resource_id: uuid.UUID,
+    user: CurrentUser,
+) -> Resource:
+    require_tenant_access(tenant_id, user)
+    r = await session.get(Resource, resource_id)
+    if r is None or r.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="recurso no encontrado")
+    return r
+
+
+@router.get("/tenants/{tenant_id}/resources")
+async def list_resources(
+    tenant_id: uuid.UUID,
+    user: CurrentUser = Depends(require_tenant_role(*RESOURCE_ADMIN_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Recursos del tenant (ordenados por nombre)."""
+    require_tenant_access(tenant_id, user)
+    rows = (
+        await session.execute(
+            select(Resource)
+            .where(Resource.tenant_id == tenant_id)
+            .order_by(Resource.nombre.asc())
+        )
+    ).scalars().all()
+    return [_resource_public(r) for r in rows]
+
+
+@router.post("/tenants/{tenant_id}/resources", status_code=201)
+async def create_resource(
+    tenant_id: uuid.UUID,
+    body: ResourceCreate,
+    user: CurrentUser = Depends(require_tenant_role(*RESOURCE_ADMIN_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Crea un recurso. El slug es único por tenant (409 si ya existe)."""
+    require_tenant_access(tenant_id, user)
+    dup = (
+        await session.execute(
+            select(Resource.id).where(
+                Resource.tenant_id == tenant_id,
+                Resource.slug == body.slug,
+            )
+        )
+    ).scalar_one_or_none()
+    if dup is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"ya existe un recurso con slug '{body.slug}'",
+        )
+    r = Resource(
+        tenant_id=tenant_id,
+        slug=body.slug,
+        nombre=body.nombre,
+        tipo=body.tipo,
+        movilidad=body.movilidad,
+        capacidad=body.capacidad,
+        especialidad=body.especialidad,
+    )
+    session.add(r)
+    await log_event(
+        session, tenant_id, "resource.created",
+        {"resource_id": str(r.id), "slug": r.slug, "by": user.email},
+    )
+    await session.commit()
+    return _resource_public(r)
+
+
+@router.put("/tenants/{tenant_id}/resources/{resource_id}")
+async def update_resource(
+    tenant_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    body: ResourceUpdate,
+    user: CurrentUser = Depends(require_tenant_role(*RESOURCE_ADMIN_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Actualización parcial de un recurso (slug único por tenant)."""
+    r = await _get_scoped_resource(session, tenant_id, resource_id, user)
+    data = body.model_dump(exclude_unset=True)
+    if "slug" in data and data["slug"] != r.slug:
+        dup = (
+            await session.execute(
+                select(Resource.id).where(
+                    Resource.tenant_id == tenant_id,
+                    Resource.slug == data["slug"],
+                )
+            )
+        ).scalar_one_or_none()
+        if dup is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"ya existe un recurso con slug '{data['slug']}'",
+            )
+    for field, value in data.items():
+        setattr(r, field, value)
+    await log_event(
+        session, tenant_id, "resource.updated",
+        {"resource_id": str(r.id), "slug": r.slug,
+         "changed": sorted(data), "by": user.email},
+    )
+    await session.commit()
+    return _resource_public(r)
+
+
+@router.delete("/tenants/{tenant_id}/resources/{resource_id}")
+async def delete_resource(
+    tenant_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    user: CurrentUser = Depends(require_tenant_role(*RESOURCE_ADMIN_ROLES)),
+    session: AsyncSession = Depends(get_session),
+):
+    """Elimina un recurso. BLOQUEADO (409) si tiene citas futuras no
+    canceladas que lo usan: el FK tiene ondelete=CASCADE y un borrado
+    silencioso desarmaría la agenda. El operador debe cancelar o reasignar
+    esas citas primero."""
+    r = await _get_scoped_resource(session, tenant_id, resource_id, user)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    future = (
+        await session.execute(
+            select(func.count(Appointment.id))
+            .select_from(AppointmentResource)
+            .join(Appointment,
+                  Appointment.id == AppointmentResource.appointment_id)
+            .where(
+                AppointmentResource.resource_id == r.id,
+                Appointment.tenant_id == r.tenant_id,
+                Appointment.start_at >= now,
+                Appointment.status != "cancelled",
+            )
+        )
+    ).scalar() or 0
+    if future:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"no se puede eliminar '{r.slug}': tiene {future} "
+                "cita(s) futura(s) que lo usan. Cancela o reasigna esas "
+                "citas antes de eliminar el recurso."
+            ),
+        )
+    await log_event(
+        session, tenant_id, "resource.deleted",
+        {"resource_id": str(r.id), "slug": r.slug, "by": user.email},
+    )
+    await session.delete(r)
+    await session.commit()
+    return {"status": "deleted", "id": str(r.id), "slug": r.slug}
+
+
+# ── Configuración instalada (Fase 7d) ─────────────────────────────────
+#
+# Solo lectura: la "configuración viva" que instalaron el levantamiento y el
+# onboarding, y que usan el chatbot y el CRM desde esta misma fuente
+# (tenant_configs, resources, service_types, tenant_privacy_terms). Si el
+# operador cambia el perfil después, los snapshots viejos de citas ya hechas
+# conservan lo cotizado (ver ServiceType); esta vista muestra lo vigente.
+
+
+@router.get("/tenants/{tenant_id}/installed-config")
+async def get_installed_config(
+    tenant_id: uuid.UUID,
+    user: CurrentUser = Depends(
+        require_tenant_role(ROLE_PLATFORM_ADMIN, ROLE_TENANT_ADMIN)
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """Snapshot de solo lectura de la configuración instalada del tenant."""
+    require_tenant_access(tenant_id, user)
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant no encontrado")
+    cfg = (
+        await session.execute(
+            select(TenantConfig).where(TenantConfig.tenant_id == tenant_id)
+        )
+    ).scalar_one_or_none()
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="config no encontrada")
+    resources = (
+        await session.execute(
+            select(Resource)
+            .where(Resource.tenant_id == tenant_id)
+            .order_by(Resource.nombre.asc())
+        )
+    ).scalars().all()
+    service_types = (
+        await session.execute(
+            select(ServiceType)
+            .where(ServiceType.tenant_id == tenant_id)
+            .order_by(ServiceType.nombre.asc())
+        )
+    ).scalars().all()
+    privacy = await session.get(TenantPrivacyTerms, tenant_id)
+    extra = cfg.extra or {}
+    return {
+        "tenant": {
+            "id": str(tenant.id),
+            "slug": tenant.slug,
+            "name": tenant.name,
+            "timezone": tenant.timezone,
+            "business_type": tenant.business_type,
+        },
+        "installed_from": {
+            "template": extra.get("template"),
+            "template_schema_version": extra.get("template_schema_version"),
+            "giro": extra.get("giro"),
+            "enabled_tools": extra.get("enabled_tools", []),
+        },
+        "business_hours": cfg.business_hours or {},
+        "resources": [_resource_public(r) for r in resources],
+        "service_types": [
+            {
+                "id": str(st.id),
+                "slug": st.slug,
+                "nombre": st.nombre,
+                "duracion_min": st.duracion_min,
+                "recursos_requeridos": st.recursos_requeridos or [],
+                "buffers": st.buffers or {},
+                "traslado": st.traslado or {},
+            }
+            for st in service_types
+        ],
+        "privacy_terms": (
+            {
+                "version": privacy.version,
+                "titulo": privacy.titulo,
+                "texto": privacy.texto,
+            }
+            if privacy is not None
+            else None
+        ),
     }

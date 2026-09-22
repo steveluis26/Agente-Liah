@@ -13,6 +13,12 @@ Páginas:
 - GET  /admin/handoffs  → bandeja (ver/tomar/resolver/devolver al bot)
 - GET  /admin/config    → editor de config por tenant
 - GET  /admin/metrics   → tablero de métricas y costo
+- GET  /admin/recursos       → gestión de recursos reservables (Fase 7d)
+- GET  /admin/configuracion  → vista de solo lectura de la config instalada
+                              (Fase 7d: recursos, tipos de servicio,
+                              aviso de privacidad, horarios, plantilla origen)
+- GET  /admin/contacts      → contactos con opt-in, segmentación
+                              prospect|client y consentimiento (Fase 6/7d)
 """
 import uuid
 from pathlib import Path
@@ -290,10 +296,12 @@ async def contacts_page(
     request: Request,
     tenant_id: uuid.UUID | None = None,
     opt_in: bool | None = None,
+    contact_type: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
-    """Página de contactos (Fase 6): opt-in de marketing visible, toggle y
-    tags. Todo vía fetch contra la API JSON."""
+    """Página de contactos (Fase 6/7d): opt-in de marketing, segmentación
+    prospect|client y consentimiento de privacidad visibles por contacto.
+    Todo vía fetch contra la API JSON."""
     user = await _ui_user(request, session)
     redir = _require_ui(user)
     if redir:
@@ -309,8 +317,8 @@ async def contacts_page(
     if tenant_id is not None:
         try:
             contacts = await admin_api.list_contacts(
-                tenant_id=tenant_id, opt_in=opt_in, contact_type=None, q=None,
-                user=user, session=session,
+                tenant_id=tenant_id, opt_in=opt_in, contact_type=contact_type,
+                q=None, user=user, session=session,
             )
         except Exception as e:
             error = str(e)
@@ -323,5 +331,84 @@ async def contacts_page(
         contacts=contacts,
         can_manage=can_manage,
         opt_in_filter="" if opt_in is None else ("1" if opt_in else "0"),
+        contact_type_filter=contact_type or "",
+        error=error,
+    )
+
+
+@router.get("/recursos", include_in_schema=False)
+async def resources_page(
+    request: Request,
+    tenant_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Página de recursos (Fase 7d): listar, crear, editar y eliminar con
+    confirmación. El borrado con citas futuras se bloquea en la API (409).
+    Sin lógica de negocio propia: todo vía fetch contra la API JSON."""
+    user = await _ui_user(request, session)
+    redir = _require_ui(user)
+    if redir:
+        return redir
+    tenants = await admin_api.list_tenants(user=user, session=session)
+    if tenant_id is None:
+        if user.tenant_id:
+            tenant_id = user.tenant_id
+        elif tenants:
+            tenant_id = uuid.UUID(tenants[0]["id"])
+    resources = []
+    error = None
+    if tenant_id is not None:
+        try:
+            resources = await admin_api.list_resources(
+                tenant_id=tenant_id, user=user, session=session
+            )
+        except Exception as e:
+            error = str(e)
+    can_manage = user.is_platform_admin or user.role == "tenant_admin"
+    return _render(
+        "recursos.html",
+        **_nav_ctx(user, "recursos"),
+        tenants=tenants,
+        tenant_filter=str(tenant_id) if tenant_id else "",
+        resources=resources,
+        can_manage=can_manage,
+        error=error,
+    )
+
+
+@router.get("/configuracion", include_in_schema=False)
+async def configuracion_page(
+    request: Request,
+    tenant_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Vista de solo lectura de la configuración instalada (Fase 7d): lo que
+    puso el levantamiento y el onboarding, la misma fuente que usan el
+    chatbot y el CRM. Sin edición aquí."""
+    user = await _ui_user(request, session)
+    redir = _require_ui(user)
+    if redir:
+        return redir
+    tenants = await admin_api.list_tenants(user=user, session=session)
+    if tenant_id is None:
+        if user.tenant_id:
+            tenant_id = user.tenant_id
+        elif tenants:
+            tenant_id = uuid.UUID(tenants[0]["id"])
+    installed = None
+    error = None
+    if tenant_id is not None:
+        try:
+            installed = await admin_api.get_installed_config(
+                tenant_id=tenant_id, user=user, session=session
+            )
+        except Exception as e:
+            error = str(e)
+    return _render(
+        "configuracion.html",
+        **_nav_ctx(user, "configuracion"),
+        tenants=tenants,
+        tenant_filter=str(tenant_id) if tenant_id else "",
+        installed=installed,
         error=error,
     )

@@ -39,6 +39,7 @@
   .pill.open { background:#fef3c7; color:#92400e; }
   .pill.taken { background:#dbeafe; color:#1e40af; }
   .pill.resolved { background:#d1fae5; color:#065f46; }
+  .pill.warn { background:#fee2e2; color:#991b1b; }
   .muted { color:var(--muted); font-size:.85rem; }
   .error { background:#fef2f2; border:1px solid #fecaca; color:#991b1b;
            border-radius:8px; padding:.7rem 1rem; margin-bottom:1rem; }
@@ -63,6 +64,8 @@
     <a href="/admin/metrics" class="{% if active=='metrics' %}active{% endif %}">Métricas</a>
     <a href="/admin/campaigns" class="{% if active=='campaigns' %}active{% endif %}">Campañas</a>
     <a href="/admin/contacts" class="{% if active=='contacts' %}active{% endif %}">Contactos</a>
+    <a href="/admin/recursos" class="{% if active=='recursos' %}active{% endif %}">Recursos</a>
+    <a href="/admin/configuracion" class="{% if active=='configuracion' %}active{% endif %}">Configuración</a>
     {% if is_platform_admin %}
     <a href="/admin/onboard" class="{% if active=='onboard' %}active{% endif %}">Nuevo cliente</a>
     {% endif %}

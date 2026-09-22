@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Recursos · Panel Liah{% endblock %}
+{% block content %}
+<h2 style="margin-top:0">Recursos reservables</h2>
+<p class="muted" style="margin-top:-.4rem">Sala, especialista, equipo o personal (fijo o móvil). Los recursos definen qué puede reservar la agenda — y por ende qué ofrece el chatbot.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/admin/recursos" class="row">
+    <label for="tenant" style="margin:0">Tenant</label>
+    <select id="tenant" name="tenant_id">
+      {% for t in tenants %}
+      <option value="{{ t.id }}" {% if tenant_filter==t.id %}selected{% endif %}>{{ t.name }} ({{ t.slug }})</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Ver</button>
+  </form>
+</div>
+{% if tenant_filter %}
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0">Nuevo recurso</h3>
+  <div class="row">
+    <div style="flex:2;min-width:180px"><label>Slug</label><input class="wide" type="text" id="r-slug" placeholder="consultorio-1"></div>
+    <div style="flex:3;min-width:200px"><label>Nombre</label><input class="wide" type="text" id="r-nombre" placeholder="Consultorio 1"></div>
+  </div>
+  <div class="row">
+    <div><label>Tipo</label><select id="r-tipo">
+      <option value="room">room (sala/espacio)</option>
+      <option value="specialist">specialist (especialista)</option>
+      <option value="equipment">equipment (equipo)</option>
+      <option value="staff">staff (personal)</option>
+    </select></div>
+    <div><label>Movilidad</label><select id="r-movilidad">
+      <option value="fixed">fixed (en sede)</option>
+      <option value="mobile">mobile (se desplaza)</option>
+    </select></div>
+    <div><label>Capacidad</label><input type="number" id="r-capacidad" value="1" min="1" style="width:5rem"></div>
+    <div style="flex:1;min-width:180px"><label>Especialidad (opcional)</label><input class="wide" type="text" id="r-especialidad" placeholder="medicina-general"></div>
+  </div>
+  <div class="row" style="margin-top:.6rem"><button class="btn" onclick="createResource()">Crear recurso</button></div>
+</div>
+<div class="card" id="edit-card" style="display:none">
+  <h3 style="margin-top:0">Editar recurso</h3>
+  <input type="hidden" id="e-id">
+  <div class="row">
+    <div style="flex:2;min-width:180px"><label>Slug</label><input class="wide" type="text" id="e-slug"></div>
+    <div style="flex:3;min-width:200px"><label>Nombre</label><input class="wide" type="text" id="e-nombre"></div>
+  </div>
+  <div class="row">
+    <div><label>Tipo</label><select id="e-tipo">
+      <option value="room">room (sala/espacio)</option>
+      <option value="specialist">specialist (especialista)</option>
+      <option value="equipment">equipment (equipo)</option>
+      <option value="staff">staff (personal)</option>
+    </select></div>
+    <div><label>Movilidad</label><select id="e-movilidad">
+      <option value="fixed">fixed (en sede)</option>
+      <option value="mobile">mobile (se desplaza)</option>
+    </select></div>
+    <div><label>Capacidad</label><input type="number" id="e-capacidad" min="1" style="width:5rem"></div>
+    <div style="flex:1;min-width:180px"><label>Especialidad (opcional)</label><input class="wide" type="text" id="e-especialidad"></div>
+  </div>
+  <div class="row" style="margin-top:.6rem">
+    <button class="btn" onclick="saveEdit()">Guardar</button>
+    <button class="btn ghost" onclick="document.getElementById('edit-card').style.display='none'">Cancelar</button>
+  </div>
+</div>
+{% endif %}
+<div class="card">
+  <h3 style="margin-top:0">Recursos</h3>
+  {% if resources %}
+  <table><thead><tr><th>Nombre</th><th>Slug</th><th>Tipo</th><th>Movilidad</th><th>Cap.</th><th>Especialidad</th>{% if can_manage %}<th>Acciones</th>{% endif %}</tr></thead><tbody>
+    {% for r in resources %}
+    <tr data-id="{{ r.id }}" data-slug="{{ r.slug }}" data-nombre="{{ r.nombre }}" data-tipo="{{ r.tipo }}" data-movilidad="{{ r.movilidad }}" data-capacidad="{{ r.capacidad }}" data-especialidad="{{ r.especialidad or '' }}">
+      <td><b>{{ r.nombre }}</b></td>
+      <td class="mono">{{ r.slug }}</td>
+      <td><span class="pill taken">{{ r.tipo }}</span></td>
+      <td>{{ '🚚 móvil' if r.movilidad=='mobile' else '🏠 fijo' }}</td>
+      <td>{{ r.capacidad }}</td>
+      <td class="muted">{{ r.especialidad or '—' }}</td>
+      {% if can_manage %}
+      <td class="row">
+        <button class="btn ghost" onclick="editResource(this.closest('tr'))">Editar</button>
+        <button class="btn warn" onclick="deleteResource('{{ r.id }}','{{ r.slug }}')">Eliminar</button>
+      </td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody></table>
+  {% else %}<p class="muted">Sin recursos. Crea el primero arriba.</p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+const TID = "{{ tenant_filter }}";
+const base = () => `/api/v1/admin/tenants/${TID}/resources`;
+const val = id => document.getElementById(id).value;
+function payload(pref){
+  const especialidad = val(pref+'-especialidad').trim();
+  return {
+    slug: val(pref+'-slug').trim(),
+    nombre: val(pref+'-nombre').trim(),
+    tipo: val(pref+'-tipo'),
+    movilidad: val(pref+'-movilidad'),
+    capacidad: parseInt(val(pref+'-capacidad'), 10) || 1,
+    especialidad: especialidad || null,
+  };
+}
+async function createResource(){
+  try {
+    const r = await api(base(), 'POST', payload('r'));
+    toast(`Recurso '${r.slug}' creado.`); location.reload();
+  } catch(e){ toast(e.message, false); }
+}
+function editResource(tr){
+  const d = tr.dataset;
+  document.getElementById('e-id').value = d.id;
+  document.getElementById('e-slug').value = d.slug;
+  document.getElementById('e-nombre').value = d.nombre;
+  document.getElementById('e-tipo').value = d.tipo;
+  document.getElementById('e-movilidad').value = d.movilidad;
+  document.getElementById('e-capacidad').value = d.capacidad;
+  document.getElementById('e-especialidad').value = d.especialidad;
+  const card = document.getElementById('edit-card');
+  card.style.display = 'block';
+  card.scrollIntoView({behavior:'smooth'});
+}
+async function saveEdit(){
+  const id = document.getElementById('e-id').value;
+  try {
+    const r = await api(`${base()}/${id}`, 'PUT', payload('e'));
+    toast(`Recurso '${r.slug}' actualizado.`); location.reload();
+  } catch(e){ toast(e.message, false); }
+}
+async function deleteResource(id, slug){
+  if (!confirm(`¿Eliminar el recurso '${slug}'? Esta acción no se puede deshacer. Si tiene citas futuras, se bloqueará.`)) return;
+  try {
+    await api(`${base()}/${id}`, 'DELETE');
+    toast(`Recurso '${slug}' eliminado.`); location.reload();
+  } catch(e){ toast(e.message, false); }
+}
+</script>
+{% endblock %}

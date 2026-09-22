@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Configuración instalada · Panel Liah{% endblock %}
+{% block content %}
+<h2 style="margin-top:0">Configuración instalada</h2>
+<p class="muted" style="margin-top:-.4rem">🔒 <b>Solo lectura.</b> Esta es la configuración viva que instaló el levantamiento: la usan el chatbot y el CRM desde <b>una sola fuente de verdad</b>. No se edita aquí para no romper la coherencia entre ambos.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/admin/configuracion" class="row">
+    <label for="tenant" style="margin:0">Tenant</label>
+    <select id="tenant" name="tenant_id">
+      {% for t in tenants %}
+      <option value="{{ t.id }}" {% if tenant_filter==t.id %}selected{% endif %}>{{ t.name }} ({{ t.slug }})</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Ver</button>
+  </form>
+</div>
+{% if installed %}
+<div class="card">
+  <h3 style="margin-top:0">Origen del levantamiento</h3>
+  <div class="kpis">
+    <div class="kpi"><div class="l">Plantilla</div><div class="v" style="font-size:1.1rem">{{ installed.installed_from.template or '—' }}</div></div>
+    <div class="kpi"><div class="l">Versión del esquema</div><div class="v" style="font-size:1.1rem">{{ installed.installed_from.template_schema_version or '—' }}</div></div>
+    <div class="kpi"><div class="l">Giro</div><div class="v" style="font-size:1.1rem">{{ installed.installed_from.giro or installed.tenant.business_type or '—' }}</div></div>
+    <div class="kpi"><div class="l">Zona horaria</div><div class="v" style="font-size:1.1rem">{{ installed.tenant.timezone or '—' }}</div></div>
+  </div>
+  {% if installed.installed_from.enabled_tools %}<p class="muted">Herramientas habilitadas: {% for t in installed.installed_from.enabled_tools %}<span class="pill taken">{{ t }}</span> {% endfor %}</p>{% endif %}
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Horarios</h3>
+  {% if installed.business_hours %}
+  <table><thead><tr><th>Día</th><th>Horario</th></tr></thead><tbody>
+    {% for day, spec in installed.business_hours.items() %}
+    <tr><td style="text-transform:capitalize">{{ day }}</td><td>{% if spec=='closed' %}<span class="pill open">cerrado</span>{% else %}<span class="mono">{{ spec.open }} – {{ spec.close }}</span>{% endif %}</td></tr>
+    {% endfor %}
+  </tbody></table>
+  {% else %}<p class="muted">Sin horarios configurados.</p>{% endif %}
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Recursos ({{ installed.resources|length }})</h3>
+  {% if installed.resources %}
+  <table><thead><tr><th>Nombre</th><th>Slug</th><th>Tipo</th><th>Movilidad</th><th>Cap.</th><th>Especialidad</th></tr></thead><tbody>
+    {% for r in installed.resources %}
+    <tr>
+      <td><b>{{ r.nombre }}</b></td>
+      <td class="mono">{{ r.slug }}</td>
+      <td><span class="pill taken">{{ r.tipo }}</span></td>
+      <td>{{ 'móvil' if r.movilidad=='mobile' else 'fijo' }}</td>
+      <td>{{ r.capacidad }}</td>
+      <td class="muted">{{ r.especialidad or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table>
+  {% else %}<p class="muted">Sin recursos instalados.</p>{% endif %}
+  <p><a href="/admin/recursos?tenant_id={{ installed.tenant.id }}">Gestionar recursos →</a></p>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Tipos de servicio ({{ installed.service_types|length }})</h3>
+  {% if installed.service_types %}
+  {% for st in installed.service_types %}
+  <div style="border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;margin-bottom:.6rem">
+    <div class="row" style="justify-content:space-between">
+      <b>{{ st.nombre }}</b>
+      <span class="pill taken">{{ st.duracion_min }} min</span>
+    </div>
+    <div class="muted" style="margin-top:.3rem">Slug: <span class="mono">{{ st.slug }}</span></div>
+    {% if st.recursos_requeridos %}
+    <div style="margin-top:.3rem"><span class="muted">Requiere:</span>
+      {% for req in st.recursos_requeridos %}
+      <span class="pill open">{{ req.recurso if req.recurso else (req.tipo ~ ' ×' ~ (req.cantidad or 1)) }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="muted" style="margin-top:.3rem">
+      Buffers: setup {{ st.buffers.setup if st.buffers.setup is defined else '—' }} min ·
+      teardown {{ st.buffers.teardown if st.buffers.teardown is defined else '—' }} min
+      {% if st.traslado and st.traslado.modo %} · Traslado: <span class="mono">{{ st.traslado.modo }}</span>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}<p class="muted">Sin tipos de servicio instalados.</p>{% endif %}
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Aviso de privacidad vigente</h3>
+  {% if installed.privacy_terms %}
+  <p><b>{{ installed.privacy_terms.titulo }}</b> <span class="pill resolved">v{{ installed.privacy_terms.version }}</span></p>
+  <p class="muted">Los contactos aceptan esta versión desde el primer mensaje; queda registrada en su ficha (ver Contactos).</p>
+  <details><summary class="muted">Ver texto del aviso</summary>
+    <div style="white-space:pre-wrap;font-size:.85rem;border:1px solid var(--line);border-radius:8px;padding:.7rem;margin-top:.5rem">{{ installed.privacy_terms.texto }}</div>
+  </details>
+  {% else %}<p class="muted">Sin aviso de privacidad instalado.</p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

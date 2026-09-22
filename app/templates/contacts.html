@@ -2,7 +2,7 @@
 {% block title %}Contactos · Panel Liah{% endblock %}
 {% block content %}
 <h2 style="margin-top:0">Contactos</h2>
-<p class="muted" style="margin-top:-.4rem">Opt-in de marketing visible por contacto. Sin opt-in, el contacto <b>no</b> recibe campañas ni avisos (regla anti-baneo).</p>
+<p class="muted" style="margin-top:-.4rem">Segmentación <b>curioso → cliente</b>, consentimiento de privacidad y opt-in de marketing por contacto. Sin opt-in, el contacto <b>no</b> recibe campañas ni avisos (regla anti-baneo).</p>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 <div class="card">
   <form method="get" action="/admin/contacts" class="row">
@@ -11,6 +11,12 @@
       {% for t in tenants %}
       <option value="{{ t.id }}" {% if tenant_filter==t.id %}selected{% endif %}>{{ t.name }} ({{ t.slug }})</option>
       {% endfor %}
+    </select>
+    <label for="typef" style="margin:0">Tipo</label>
+    <select id="typef" name="contact_type">
+      <option value="" {% if contact_type_filter=='' %}selected{% endif %}>Todos (curiosos + clientes)</option>
+      <option value="prospect" {% if contact_type_filter=='prospect' %}selected{% endif %}>Curiosos (prospect)</option>
+      <option value="client" {% if contact_type_filter=='client' %}selected{% endif %}>Clientes (client)</option>
     </select>
     <label for="optf" style="margin:0">Opt-in</label>
     <select id="optf" name="opt_in">
@@ -23,11 +29,19 @@
 </div>
 {% if tenant_filter %}
 <div class="card">
-  <table><thead><tr><th>Contacto</th><th>Tipo</th><th>Opt-in marketing</th><th>Fuente</th><th>Tags</th>{% if can_manage %}<th>Acciones</th>{% endif %}</tr></thead><tbody>
+  <table><thead><tr><th>Contacto</th><th>Tipo</th><th>Consentimiento</th><th>Aviso privacidad</th><th>Opt-in marketing</th><th>Fuente</th><th>Tags</th>{% if can_manage %}<th>Acciones</th>{% endif %}</tr></thead><tbody>
     {% for c in contacts %}
     <tr>
       <td><b>{{ c.name or '—' }}</b><br><span class="mono">{{ c.wa_id }}</span></td>
       <td><span class="pill {{ 'resolved' if c.contact_type=='client' else 'open' }}">{{ c.contact_type }}</span></td>
+      <td>
+        {% if c.consent_status=='granted' %}<span class="pill resolved">aceptado</span>
+        {% elif c.consent_status=='pending' %}<span class="pill open">pendiente</span>
+        {% elif c.consent_status=='revoked' %}<span class="pill warn">revocado</span>
+        {% else %}<span class="pill">sin registro</span>{% endif %}
+        {% if c.consent_at %}<br><span class="muted" style="font-size:.75rem">{{ c.consent_at[:19].replace('T',' ') }}</span>{% endif %}
+      </td>
+      <td class="muted">{% if c.privacy_terms_version %}v{{ c.privacy_terms_version }}{% else %}—{% endif %}</td>
       <td>{% if c.marketing_opt_in %}<span class="pill resolved">SÍ</span>{% else %}<span class="pill open">NO</span>{% endif %}</td>
       <td class="muted">{{ c.marketing_opt_in_source or '—' }}</td>
       <td>{% for t in c.tags %}<span class="pill taken">{{ t }}</span> {% endfor %}</td>
