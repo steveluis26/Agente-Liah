@@ -20,6 +20,8 @@ class Handoff(Base, TenantMixin):
     reason: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="open", nullable=False)
     taken_by: Mapped[str | None] = mapped_column(String(80))
+    # Nota que deja el operador al resolver (Fase 3: bandeja de handoff).
+    resolution_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         server_default=text("now()"), nullable=False
     )

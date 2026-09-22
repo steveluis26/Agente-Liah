@@ -2,6 +2,7 @@ from app.models.action_log import ActionLog
 from app.models.appointments import Appointment
 from app.models.automation_rules import AutomationRule, ReminderLog
 from app.models.contacts import Contact
+from app.models.conversations import Conversation
 from app.models.event_log import EventLog
 from app.models.handoffs import Handoff, Usage
 from app.models.knowledge import KnowledgeChunk, KnowledgeSource
@@ -20,6 +21,7 @@ __all__ = [
     "WhatsappChannel",
     "Template",
     "Contact",
+    "Conversation",
     "KnowledgeSource",
     "KnowledgeChunk",
     "Message",

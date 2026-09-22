@@ -1,18 +1,27 @@
 """API de onboarding white-label (Fase 3).
 
-- POST /tenants: alta self-service (genera API key, devuelta 1 vez).
-- POST /channels/whatsapp/embedded-signup/callback: Meta Embedded Signup.
+- POST /tenants: alta por el operador de plataforma (requiere JWT de
+  platform_admin; antes abierto a cualquiera).
+- POST /channels/whatsapp/embedded-signup/callback: Meta Embedded Signup,
+  autenticado (JWT de platform_admin o X-Tenant-API-Key del propio tenant).
 - Endpoints protegidos por X-Tenant-API-Key: config, rules, templates.
 """
 import httpx
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import generate_api_key, hash_api_key, get_current_tenant_by_api_key
+from app.core.auth import (
+    authorize_embedded_signup,
+    generate_api_key,
+    get_current_tenant_by_api_key,
+    hash_api_key,
+    require_platform_admin,
+)
+from app.core.auth import CurrentUser  # noqa: F401  (tipo del operador)
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.models import (
@@ -40,7 +49,17 @@ class TenantCreated(BaseModel):
 
 
 @router.post("", response_model=TenantCreated, status_code=status.HTTP_201_CREATED)
-async def create_tenant(body: TenantCreate, session: AsyncSession = Depends(get_session)):
+async def create_tenant(
+    body: TenantCreate,
+    _admin: CurrentUser = Depends(require_platform_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Alta de tenant: SOLO el operador de plataforma (Fase 3).
+
+    Antes este endpoint estaba abierto a cualquiera (cualquiera podía crear
+    tenants y obtener API keys). La fase 4 lo expondrá en el panel como
+    "nuevo cliente desde plantilla".
+    """
     # slug único
     existing = (
         await session.execute(select(Tenant).where(Tenant.slug == body.slug))
@@ -83,20 +102,29 @@ GRAPH_BASE = f"https://graph.facebook.com/{EMBEDDED_SIGNUP_API_VERSION}"
 @router.post("/channels/whatsapp/embedded-signup/callback", status_code=status.HTTP_200_OK)
 async def embedded_signup_callback(
     body: EmbeddedSignupCallback,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ):
     """Completa Embedded Signup: cambia code por token y suscribe webhook.
+
+    Autenticado (Fase 3): requiere JWT de platform_admin o X-Tenant-API-Key
+    del tenant del body. Ver `authorize_embedded_signup`.
 
     Pasos (verificados contra Graph API en producción; aquí el flujo es
     idempotente y registra el canal). En dry-run (sin app_id/secret) solo
     persiste el canal con los datos provistos.
     """
+    try:
+        tenant_uuid = uuid.UUID(body.tenant_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="tenant_id inválido")
+    await authorize_embedded_signup(request, session, tenant_uuid)
     settings = get_settings()
     app_id = settings.whatsapp_app_id or None
     app_secret = settings.whatsapp_app_secret or None
 
     tenant = (
-        await session.execute(select(Tenant).where(Tenant.id == uuid.UUID(body.tenant_id)))
+        await session.execute(select(Tenant).where(Tenant.id == tenant_uuid))
     ).scalar_one_or_none()
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")

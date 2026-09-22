@@ -37,9 +37,12 @@ from app.core.audit import log_event
 from app.core.tenant_ctx import clear_tenant_id, require_tenant, set_tenant_id
 from app.models import (
     Contact,
-    Handoff,
     Message,
     WebhookJob,
+)
+from app.models.conversations import (
+    MODE_HUMAN,
+    get_or_create_conversation,
 )
 from app.models.webhook_jobs import MAX_ATTEMPTS
 
@@ -332,20 +335,25 @@ async def _process_job(
                         {"wamid": wamid, "contact_id": str(contact.id)})
         await session.commit()
 
-        # Gate: si hay handoff abierto, el bot queda en silencio.
-        open_h = await session.execute(
-            select(Handoff).where(
-                Handoff.tenant_id == tenant_id,
-                Handoff.contact_id == contact.id,
-                Handoff.status == "open",
-            )
+        # Conversación del contacto (Fase 3): se crea o reutiliza por contacto;
+        # el handoff la pone en `human`, "devolver al bot" la regresa a `ai`.
+        conv = await get_or_create_conversation(
+            session, tenant_id, contact.id, channel=adapter.name
         )
-        if open_h.scalar_one_or_none() is not None:
-            logger.info("Handoff abierto para %s: bot en silencio", contact.id)
+
+        # Gate: si la conversación está en modo humano, el bot queda en
+        # silencio (Fase 1 lo hacía por handoff abierto; Fase 3 lo conecta al
+        # modelo de conversaciones como única fuente de verdad).
+        if conv.mode == MODE_HUMAN:
+            logger.info(
+                "Conversación %s en modo humano: bot en silencio", conv.id
+            )
+            await session.commit()
             continue
 
         reply = await run_agent(
-            session, llm, tenant_id, contact.id, body, embedder=embedder
+            session, llm, tenant_id, contact.id, body, embedder=embedder,
+            conversation_id=conv.id,
         )
         if reply:
             sender = WhatsAppCloudSender(session)

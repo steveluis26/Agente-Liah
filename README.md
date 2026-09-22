@@ -85,7 +85,48 @@ El LLM y el embedder se eligen **por tenant** en `tenant_configs.model_routing`
 - Consultorios/escuelas: habilitar `lfpdp_consent_required` y aviso de
   privacidad en el primer contacto (LFPDPPP, México).
 
+## Panel de operador (Fase 3)
+
+UI mínima server-rendered en `/admin` (Jinja2, sin build step) + API JSON en
+`/api/v1/admin`: bandeja de handoffs (ver/tomar/resolver/devolver al bot),
+editor de config por tenant y tablero de métricas/costo.
+
+**Cómo entrar:**
+
+```bash
+# 1. Migra (crea `conversations`, columnas de auth en `platform_users`)
+alembic upgrade head
+
+# 2. Crea el primer operador (solo si no existe ninguno; password por env o
+#    prompt interactivo; jamás hay default)
+LIAH_ADMIN_PASSWORD='tu-password-seguro' python scripts/seed_platform_admin.py
+
+# 3. Arranca y abre http://localhost:8000/admin
+uvicorn app.main:app --reload --port 8000
+```
+
+**Roles:** `platform_admin` (opera todos los tenants; único que puede crear
+tenants y operadores), `tenant_admin` (config + bandeja + métricas de su
+tenant), `tenant_agent` (bandeja de su tenant). Login con email+password →
+JWT (header `Authorization: Bearer` o cookie httpOnly `liah_admin_token`,
+que fija el login para la UI). En producción configura `LIAH_JWT_SECRET`
+(el arranque falla si sigue siendo el default) y `LIAH_JWT_EXPIRE_MINUTES`
+(default 480).
+
+**Endpoints del panel** (`/api/v1/admin`): `POST /auth/login`, `GET /tenants`,
+`GET /handoffs` (+ `POST /handoffs/{id}/take|resolve|return-to-bot`),
+`GET|PUT /tenants/{id}/config` (valida `model_routing` contra el factory de
+Fase 2; nunca expone secretos), `GET /tenants/{id}/metrics?days=30`
+(resolución automática, transferencias, 1ª respuesta media, acciones
+exitosas, costo por conversación).
+
+**Seguridad cerrada en esta fase:** `POST /tenants` exige JWT de
+`platform_admin` (antes abierto); el callback de Embedded Signup exige JWT
+de plataforma o la `X-Tenant-API-Key` del propio tenant (antes aceptaba
+`tenant_id` del body sin auth). Ver `docs/DECISIONES_FASE3.md`.
+
 ## Siguiente fase
 
-Fase 3: panel mínimo (bandeja de handoff, config por tenant, métricas y costo
-visible). Ver `docs/DECISIONES_FASE2.md` para las decisiones de esta fase.
+Fase 4: alta por perfil declarativo (`templates/<giro>.yaml` versionados +
+"nuevo cliente desde plantilla" en el panel; primera plantilla:
+`consultorio_medico`). Ver `docs/DECISIONES_FASE3.md` para el contexto.

@@ -40,6 +40,7 @@ from app.agent.secrets import (
 )
 from app.core.audit import log_event
 from app.models import Handoff, Message, Tenant, TenantConfig
+from app.models.conversations import MODE_HUMAN, set_conversation_mode
 
 logger = logging.getLogger("liah.engine")
 
@@ -172,6 +173,7 @@ async def _record_llm_usage(
     contact_id: uuid.UUID,
     llm: LLMPort,
     resp,
+    conversation_id: uuid.UUID | None = None,
 ) -> None:
     """Persiste el usage del turno. Si falla, loguea y el flujo SIGUE.
 
@@ -182,7 +184,9 @@ async def _record_llm_usage(
         if not usage.get("prompt_tokens") and not usage.get("completion_tokens"):
             return  # LLM local/stub sin usage: nada que costear
         model = getattr(llm, "model", None) or "unknown"
-        await record_turn_usage(session, tenant_id, contact_id, None, model, usage)
+        await record_turn_usage(
+            session, tenant_id, contact_id, conversation_id, model, usage
+        )
     except Exception:
         logger.exception(
             "No se pudo registrar usage del turno (tenant=%s); el flujo continúa",
@@ -198,8 +202,13 @@ async def run_agent(
     user_message: str,
     *,
     embedder: EmbedderPort,
+    conversation_id: uuid.UUID | None = None,
 ) -> str:
-    """Ejecuta el loop del agente. El embedder se inyecta explícitamente."""
+    """Ejecuta el loop del agente. El embedder se inyecta explícitamente.
+
+    `conversation_id` (Fase 3) enlaza el costeo del turno con la conversación
+    para el panel de métricas; None = comportamiento legacy.
+    """
     # Config del tenant (system prompt + política del agente).
     cfg = (
         await session.execute(
@@ -277,7 +286,10 @@ async def run_agent(
         )
         # Costeo por turno (Fase 2): persiste el usage; si falla, loguea y
         # el loop sigue (el costeo jamás rompe la conversación).
-        await _record_llm_usage(session, tenant_id, contact_id, llm, resp)
+        await _record_llm_usage(
+            session, tenant_id, contact_id, llm, resp,
+            conversation_id=conversation_id,
+        )
 
         # Guard de infraestructura (no confiamos ciegamente en el LLM):
         # si forzamos RAG en la primera iteración y el modelo NO devolvió un
@@ -415,4 +427,7 @@ async def _create_handoff(
         status="open",
     )
     session.add(handoff)
+    # Fase 3: el handoff pone la conversación en modo humano (el drenador
+    # silencia al bot mientras mode == "human").
+    await set_conversation_mode(session, tenant_id, contact_id, MODE_HUMAN)
     return handoff

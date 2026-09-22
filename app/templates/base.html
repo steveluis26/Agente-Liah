@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Panel Liah{% endblock %}</title>
+<style>
+  :root { --bg:#f7f5f0; --card:#fff; --ink:#1f2937; --muted:#6b7280;
+          --brand:#0f766e; --brand-d:#115e59; --line:#e5e7eb; --warn:#b45309; }
+  * { box-sizing:border-box; }
+  body { font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg);
+         color:var(--ink); margin:0; }
+  header { background:var(--brand); color:#fff; padding:.7rem 1rem; display:flex;
+           align-items:center; gap:1rem; flex-wrap:wrap; }
+  header .logo { font-weight:700; font-size:1.1rem; }
+  header nav a { color:#d7f3ef; text-decoration:none; margin-right:.9rem; padding:.25rem .1rem; }
+  header nav a.active { color:#fff; border-bottom:2px solid #fff; font-weight:600; }
+  header .who { margin-left:auto; font-size:.85rem; color:#d7f3ef; display:flex; gap:.6rem; align-items:center; }
+  header .who button { background:transparent; border:1px solid #d7f3ef; color:#fff;
+                      border-radius:6px; padding:.25rem .6rem; cursor:pointer; }
+  main { max-width:1100px; margin:1.2rem auto; padding:0 1rem 3rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:1rem 1.2rem; margin-bottom:1rem; }
+  .row { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }
+  .btn { background:var(--brand); color:#fff; border:none; border-radius:8px;
+         padding:.5rem .9rem; cursor:pointer; font-size:.9rem; }
+  .btn:hover { background:var(--brand-d); }
+  .btn.ghost { background:#fff; color:var(--brand); border:1px solid var(--brand); }
+  .btn.warn { background:var(--warn); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  select, input[type=text], input[type=email], input[type=password], textarea {
+         border:1px solid var(--line); border-radius:8px; padding:.5rem .6rem; font-size:.9rem; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th, td { text-align:left; padding:.55rem .5rem; border-bottom:1px solid var(--line);
+           vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:.8rem; text-transform:uppercase; }
+  .pill { display:inline-block; padding:.15rem .55rem; border-radius:999px; font-size:.78rem;
+          font-weight:600; }
+  .pill.open { background:#fef3c7; color:#92400e; }
+  .pill.taken { background:#dbeafe; color:#1e40af; }
+  .pill.resolved { background:#d1fae5; color:#065f46; }
+  .muted { color:var(--muted); font-size:.85rem; }
+  .error { background:#fef2f2; border:1px solid #fecaca; color:#991b1b;
+           border-radius:8px; padding:.7rem 1rem; margin-bottom:1rem; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.8rem; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:.9rem; }
+  .kpi .v { font-size:1.5rem; font-weight:700; }
+  .kpi .l { color:var(--muted); font-size:.8rem; }
+  .mono { font-family:ui-monospace,monospace; font-size:.82rem; }
+  label { font-size:.85rem; font-weight:600; display:block; margin:.7rem 0 .25rem; }
+  textarea.code { width:100%; min-height:110px; font-family:ui-monospace,monospace; font-size:.82rem; }
+  input.wide, textarea.wide { width:100%; }
+  #toast { position:fixed; bottom:1rem; right:1rem; background:#1f2937; color:#fff;
+           padding:.7rem 1rem; border-radius:8px; display:none; max-width:320px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">Liah · Panel</span>
+  <nav>
+    <a href="/admin/handoffs" class="{% if active=='handoffs' %}active{% endif %}">Bandeja</a>
+    <a href="/admin/config" class="{% if active=='config' %}active{% endif %}">Config</a>
+    <a href="/admin/metrics" class="{% if active=='metrics' %}active{% endif %}">Métricas</a>
+  </nav>
+  <span class="who">
+    <span>{{ user_email }} · {{ user_role }}</span>
+    <form method="post" action="/admin/logout" style="display:inline"><button type="submit">Salir</button></form>
+  </span>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<div id="toast"></div>
+<script>
+function toast(msg, ok=true){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display='block';
+  t.style.background = ok ? '#1f2937' : '#991b1b';
+  setTimeout(()=>{ t.style.display='none'; }, 3500);
+}
+async function api(path, method='GET', body=null){
+  const r = await fetch(path, {
+    method, credentials:'include',
+    headers:{'Content-Type':'application/json'},
+    body: body ? JSON.stringify(body) : null,
+  });
+  if (r.status === 401){ window.location = '/admin/login'; throw new Error('sesión expirada'); }
+  const data = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(data.detail || ('HTTP '+r.status));
+  return data;
+}
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

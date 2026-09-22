@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Métricas · Panel Liah{% endblock %}
+{% block content %}
+<h2 style="margin-top:0">Métricas y costo</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/admin/metrics" class="row">
+    <label for="tenant" style="margin:0">Tenant</label>
+    <select id="tenant" name="tenant_id">
+      {% for t in tenants %}
+      <option value="{{ t.id }}" {% if tenant_filter==t.id %}selected{% endif %}>{{ t.name }} ({{ t.slug }})</option>
+      {% endfor %}
+    </select>
+    <label for="days" style="margin:0">Días</label>
+    <select id="days" name="days">
+      {% for d in [7, 30, 90] %}
+      <option value="{{ d }}" {% if days==d %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Ver</button>
+  </form>
+</div>
+{% if metrics %}
+<div class="kpis">
+  <div class="kpi"><div class="v">{{ metrics.conversations.total }}</div><div class="l">Conversaciones ({{ metrics.days }}d)</div></div>
+  <div class="kpi"><div class="v">{{ metrics.conversations.closed }}</div><div class="l">Cerradas</div></div>
+  <div class="kpi"><div class="v">{{ metrics.conversations.auto_resolution_pct if metrics.conversations.auto_resolution_pct is not none else '—' }}{% if metrics.conversations.auto_resolution_pct is not none %}%{% endif %}</div><div class="l">Resolución automática</div></div>
+  <div class="kpi"><div class="v">{{ metrics.transfers }}</div><div class="l">Transferencias a humano</div></div>
+  <div class="kpi"><div class="v">{{ metrics.avg_first_response_seconds if metrics.avg_first_response_seconds is not none else '—' }}{% if metrics.avg_first_response_seconds is not none %}s{% endif %}</div><div class="l">1ª respuesta media ({{ metrics.first_responses_measured }} medidas)</div></div>
+</div>
+<div class="kpis" style="margin-top:.8rem">
+  <div class="kpi"><div class="v">${{ '%.4f'|format(metrics.cost_usd.total_window) }}</div><div class="l">Costo LLM ventana (USD)</div></div>
+  <div class="kpi"><div class="v">${{ '%.4f'|format(metrics.cost_usd.per_conversation) if metrics.cost_usd.per_conversation is not none else '—' }}</div><div class="l">Costo por conversación</div></div>
+  <div class="kpi"><div class="v">${{ '%.4f'|format(metrics.cost_usd.monthly_total) }}</div><div class="l">Costo mes en curso (USD)</div></div>
+  <div class="kpi"><div class="v">{{ metrics.cost_usd.tokens_in + metrics.cost_usd.tokens_out }}</div><div class="l">Tokens (in+out)</div></div>
+</div>
+<div class="card" style="margin-top:.8rem">
+  <h3 style="margin-top:0">Acciones exitosas</h3>
+  {% if metrics.successful_actions %}
+  <table><thead><tr><th>Acción</th><th>Ejecuciones</th></tr></thead><tbody>
+    {% for action, count in metrics.successful_actions.items() %}
+    <tr><td class="mono">{{ action }}</td><td>{{ count }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+  {% else %}
+  <p class="muted">Sin acciones exitosas en la ventana.</p>
+  {% endif %}
+</div>
+{% elif tenants %}
+<p class="muted">Elige un tenant para ver sus métricas.</p>
+{% endif %}
+{% endblock %}

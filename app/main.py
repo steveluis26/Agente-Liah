@@ -7,6 +7,8 @@ from fastapi import FastAPI
 
 from app.api.knowledge import router as knowledge_router
 from app.api.tenants import router as tenants_router
+from app.api.admin import router as admin_router
+from app.api.admin_ui import router as admin_ui_router
 from app.channels.whatsapp.webhook import router as whatsapp_router
 from app.reminders.scheduler import start_scheduler
 
@@ -58,13 +60,15 @@ def _scheduler_enabled() -> bool:
     return os.getenv("ENABLE_REMINDER_SCHEDULER", "false").lower() == "true"
 
 
-app = FastAPI(title="Agente Liah", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Agente Liah", version="0.3.0", lifespan=lifespan)
 
 app.include_router(whatsapp_router)
 app.include_router(knowledge_router)
 app.include_router(tenants_router)
+app.include_router(admin_router)     # API JSON del panel: /api/v1/admin
+app.include_router(admin_ui_router)  # UI server-rendered: /admin
 
 
 @app.get("/health", tags=["health"])
 async def health():
-    return {"status": "ok", "phase": "2"}
+    return {"status": "ok", "phase": "3"}

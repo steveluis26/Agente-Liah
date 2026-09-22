@@ -22,6 +22,8 @@ dependencies = [
     "pypdf>=4.0",
     "beautifulsoup4>=4.12",
     "python-multipart>=0.0.9",
+    # Panel mínimo Fase 3: UI server-rendered (Jinja2, sin build step).
+    "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]

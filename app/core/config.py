@@ -9,6 +9,7 @@ _DEFAULT_SECRETS = {
     "app_secret_key": "change-me",
     "whatsapp_app_secret": "test_app_secret",
     "whatsapp_verify_token": "test_token_123",
+    "liah_jwt_secret": "change-me",
 }
 
 
@@ -31,6 +32,10 @@ class Settings(BaseSettings):
     # Pepper global para el hash de API keys (Fase 1: salt por clave + pepper).
     # En producción DEBE venir de variable de entorno / secret manager.
     liah_api_key_pepper: str = ""
+
+    # JWT del panel de operadores (Fase 3). Secreto HS256; expiración en minutos.
+    liah_jwt_secret: str = "change-me"
+    liah_jwt_expire_minutes: int = 480  # 8h: jornada de un operador
 
     @model_validator(mode="after")
     def _forbid_default_secrets_in_production(self):

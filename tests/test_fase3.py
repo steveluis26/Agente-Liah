@@ -15,13 +15,46 @@ from app.core import db as db_mod
 from app.main import app
 from app.models import (
     AutomationRule,
+    PlatformUser,
     Template,
     Tenant,
     TenantConfig,
     WhatsappChannel,
 )
+from app.models.platform_users import ROLE_PLATFORM_ADMIN, hash_password
 
 API = "http://t"
+
+
+async def _admin_headers(c) -> dict:
+    """Crea un platform_admin en BD y devuelve headers con su JWT.
+
+    Idempotente: si el admin ya existe (misma BD de test), lo reutiliza.
+    (Fase 3 del panel: POST /tenants y el callback de signup exigen auth.)
+    """
+    async with db_mod.async_session_maker() as s:
+        existing = (
+            await s.execute(
+                select(PlatformUser).where(
+                    PlatformUser.email == "op-panel@liah.local"
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            s.add(
+                PlatformUser(
+                    email="op-panel@liah.local",
+                    password_hash=hash_password("OpPanel-Secret-123"),
+                    role=ROLE_PLATFORM_ADMIN,
+                )
+            )
+            await s.commit()
+    r = await c.post(
+        "/api/v1/admin/auth/login",
+        json={"email": "op-panel@liah.local", "password": "OpPanel-Secret-123"},
+    )
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -47,10 +80,12 @@ async def _schema():
 async def test_create_tenant_returns_api_key_once():
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        headers = await _admin_headers(c)
         r = await c.post(
             "/tenants",
             json={"slug": "barberia-x", "name": "Barberia X", "business_type": "barberia",
                   "system_prompt": "Eres Liah."},
+            headers=headers,
         )
     assert r.status_code == 201
     body = r.json()
@@ -68,9 +103,11 @@ async def test_rotate_api_key():
     """Rotación: la nueva key funciona, la anterior muere de inmediato."""
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        headers = await _admin_headers(c)
         created = await c.post(
             "/tenants",
             json={"slug": "rotacion-x", "name": "Rot X", "business_type": "otro"},
+            headers=headers,
         )
         assert created.status_code == 201
         old_key = created.json()["api_key"]
@@ -97,14 +134,17 @@ async def test_duplicate_slug_rejected():
     """Dos tenants no pueden compartir slug."""
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        headers = await _admin_headers(c)
         r1 = await c.post(
             "/tenants",
             json={"slug": "slug-dup", "name": "Uno", "business_type": "otro"},
+            headers=headers,
         )
         assert r1.status_code == 201
         r2 = await c.post(
             "/tenants",
             json={"slug": "slug-dup", "name": "Dos", "business_type": "otro"},
+            headers=headers,
         )
         assert r2.status_code == 409
 
@@ -125,9 +165,11 @@ async def test_protected_endpoints_require_api_key():
 async def test_protected_config_and_crud_with_valid_key():
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        headers_admin = await _admin_headers(c)
         created = await c.post(
             "/tenants",
             json={"slug": "consultorio-y", "name": "Consultorio Y", "business_type": "consultorio"},
+            headers=headers_admin,
         )
         api_key = created.json()["api_key"]
         headers = {"X-Tenant-API-Key": api_key}
@@ -169,9 +211,11 @@ async def test_embedded_signup_callback_persists_channel():
     # crear tenant primero
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        headers = await _admin_headers(c)
         created = await c.post(
             "/tenants",
             json={"slug": "academia-z", "name": "Academia Z", "business_type": "academy"},
+            headers=headers,
         )
         tid = created.json()["tenant_id"]
 
@@ -191,10 +235,12 @@ async def test_embedded_signup_callback_persists_channel():
             return_value=httpx.Response(200, json={"success": True})
         )
         async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+            headers = await _admin_headers(c)
             r = await c.post(
                 "/tenants/channels/whatsapp/embedded-signup/callback",
                 json={"tenant_id": tid, "code": "CODE_ABC", "waba_id": "100",
                       "business_id": "200"},
+                headers=headers,
             )
     assert r.status_code == 200
     body = r.json()
@@ -211,3 +257,89 @@ def _uuid(s):
     import uuid as _u
 
     return _u.UUID(s)
+
+
+@pytest.mark.asyncio
+async def test_create_tenant_requires_platform_admin():
+    """POST /tenants sin JWT de plataforma -> 401 (Fase 3: ya no es abierto)."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        r = await c.post(
+            "/tenants",
+            json={"slug": "sin-auth", "name": "Sin Auth", "business_type": "otro"},
+        )
+        assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_signup_callback_rejects_unauthenticated():
+    """Callback de Embedded Signup sin auth -> 401 (vector de hijack cerrado)."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        headers = await _admin_headers(c)
+        created = await c.post(
+            "/tenants",
+            json={"slug": "hijack-x", "name": "Hijack X", "business_type": "otro"},
+            headers=headers,
+        )
+        tid = created.json()["tenant_id"]
+    # Cliente fresco: el anterior guarda la cookie httpOnly del login y eso
+    # SÍ autentica (correcto); aquí queremos probar la ausencia total de auth.
+    async with httpx.AsyncClient(transport=transport, base_url=API) as c2:
+        r = await c2.post(
+            "/tenants/channels/whatsapp/embedded-signup/callback",
+            json={"tenant_id": tid, "code": "CODE_X", "waba_id": "999"},
+        )
+        assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_signup_callback_accepts_own_tenant_api_key():
+    """El tenant puede enlazar su propio WhatsApp con su API key (self-service)."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url=API) as c:
+        headers = await _admin_headers(c)
+        created = await c.post(
+            "/tenants",
+            json={"slug": "selfsvc-x", "name": "Self Svc", "business_type": "otro"},
+            headers=headers,
+        )
+        body = created.json()
+        # El callback con auth válida llega a la Graph API: la mockeamos
+        # (respx no intercepta el ASGITransport de la app bajo test).
+        with respx.mock:
+            respx.get(url__startswith="https://graph.facebook.com/v20.0/oauth/access_token").mock(
+                return_value=httpx.Response(200, json={"access_token": "SELF_SVC_TOKEN"})
+            )
+            respx.get(url__startswith="https://graph.facebook.com/v20.0/555/phone_numbers").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"data": [{"id": "PN_SELF", "display_phone_number": "+525500000001"}]},
+                )
+            )
+            respx.post(url__startswith="https://graph.facebook.com/v20.0/PN_SELF/register").mock(
+                return_value=httpx.Response(200, json={"success": True})
+            )
+            respx.post(url__startswith="https://graph.facebook.com/v20.0/555/subscribed_apps").mock(
+                return_value=httpx.Response(200, json={"success": True})
+            )
+            r = await c.post(
+                "/tenants/channels/whatsapp/embedded-signup/callback",
+                json={"tenant_id": body["tenant_id"], "code": "CODE_Y", "waba_id": "555"},
+                headers={"X-Tenant-API-Key": body["api_key"]},
+            )
+        assert r.status_code == 200
+        # La API key de OTRO tenant no sirve para este tenant_id
+        # (cliente fresco para no arrastrar la cookie de admin).
+        created2 = await c.post(
+            "/tenants",
+            json={"slug": "otro-x", "name": "Otro X", "business_type": "otro"},
+            headers=headers,
+        )
+    async with httpx.AsyncClient(transport=transport, base_url=API) as c2:
+        r2 = await c2.post(
+            "/tenants/channels/whatsapp/embedded-signup/callback",
+            json={"tenant_id": body["tenant_id"], "code": "CODE_Z", "waba_id": "556"},
+            headers={"X-Tenant-API-Key": created2.json()["api_key"]},
+        )
+        assert r2.status_code == 401

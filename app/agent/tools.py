@@ -22,6 +22,7 @@ from app.agent import calendar as calmod
 from app.agent.ports import EmbedderPort
 from app.agent.rag import RAG_THRESHOLD, search_knowledge
 from app.models import Handoff
+from app.models.conversations import MODE_HUMAN, set_conversation_mode
 
 
 class AppointmentType(str, Enum):
@@ -213,6 +214,11 @@ async def run_tool(name: str, args: dict, ctx: "AgentContext") -> dict:
             status="open",
         )
         ctx.session.add(handoff)
+        # Fase 3: el handoff pone la conversación en modo humano (el drenador
+        # silencia al bot mientras mode == "human").
+        await set_conversation_mode(
+            ctx.session, ctx.tenant_id, ctx.contact_id, MODE_HUMAN
+        )
         await ctx.session.commit()
         return {"escalated": True, "handoff_id": str(handoff.id)}
 

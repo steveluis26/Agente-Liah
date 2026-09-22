@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Config por tenant · Panel Liah{% endblock %}
+{% block content %}
+<h2 style="margin-top:0">Configuración por tenant</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/admin/config" class="row">
+    <label for="tenant" style="margin:0">Tenant</label>
+    <select id="tenant" name="tenant_id">
+      {% for t in tenants %}
+      <option value="{{ t.id }}" {% if tenant_filter==t.id %}selected{% endif %}>{{ t.name }} ({{ t.slug }})</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Cargar</button>
+  </form>
+</div>
+{% if config %}
+<div class="card">
+  <h3 style="margin-top:0">{{ config.name }} <span class="muted mono">{{ config.slug }}</span></h3>
+  <form id="cfg-form">
+    <label for="system_prompt">System prompt</label>
+    <textarea id="system_prompt" name="system_prompt" class="wide" rows="4">{{ config.system_prompt }}</textarea>
+
+    <div class="row">
+      <div style="flex:1; min-width:180px">
+        <label for="tone">Tono</label>
+        <input id="tone" name="tone" type="text" class="wide" value="{{ config.tone or '' }}" maxlength="40">
+      </div>
+      <div style="flex:1; min-width:180px">
+        <label for="handoff_phone">Teléfono de handoff</label>
+        <input id="handoff_phone" name="handoff_phone" type="text" class="wide" value="{{ config.handoff_phone or '' }}" maxlength="20">
+      </div>
+    </div>
+
+    <label style="margin-top:.8rem"><input type="checkbox" id="lfpdp" {% if config.lfpdp_consent_required %}checked{% endif %}> Requerir consentimiento LFPDPPP</label>
+
+    <label for="privacy_notice">Aviso de privacidad</label>
+    <textarea id="privacy_notice" name="privacy_notice" class="wide" rows="3">{{ config.privacy_notice or '' }}</textarea>
+
+    <label for="business_hours">Horarios (JSON: día → {"open":"HH:MM","close":"HH:MM"} o "closed")</label>
+    <textarea id="business_hours" class="code wide">{{ config.business_hours | tojson(indent=2) }}</textarea>
+
+    <label for="model_routing">Model routing (JSON: llm_provider, llm_model, llm_max_tokens, llm_temperature, embedder…)</label>
+    <textarea id="model_routing" class="code wide">{{ config.model_routing | tojson(indent=2) }}</textarea>
+
+    <label for="extra">Extra / política del agente (JSON)</label>
+    <textarea id="extra" class="code wide">{{ config.extra | tojson(indent=2) }}</textarea>
+
+    <div class="row" style="margin-top:1rem">
+      <button class="btn" type="submit">Guardar</button>
+      <span class="muted">Los secretos nunca se editan aquí: las API keys y tokens viven fuera de esta config.</span>
+    </div>
+  </form>
+</div>
+{% elif tenants %}
+<p class="muted">Elige un tenant para editar su configuración.</p>
+{% else %}
+<p class="muted">No hay tenants visibles para tu usuario.</p>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if config %}
+<script>
+document.getElementById('cfg-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const parse = (id) => {
+    const raw = document.getElementById(id).value.trim();
+    if (!raw) return null;
+    try { return JSON.parse(raw); }
+    catch(e){ throw new Error('JSON inválido en '+id+': '+e.message); }
+  };
+  try {
+    const body = {
+      system_prompt: document.getElementById('system_prompt').value,
+      tone: document.getElementById('tone').value || null,
+      handoff_phone: document.getElementById('handoff_phone').value || null,
+      lfpdp_consent_required: document.getElementById('lfpdp').checked,
+      privacy_notice: document.getElementById('privacy_notice').value || null,
+      business_hours: parse('business_hours') || {},
+      model_routing: parse('model_routing') || {},
+      extra: parse('extra') || {},
+    };
+    await api('/api/v1/admin/tenants/{{ tenant_filter }}/config', 'PUT', body);
+    toast('Configuración guardada');
+  } catch(e){ toast(e.message, false); }
+});
+</script>
+{% endif %}
+{% endblock %}

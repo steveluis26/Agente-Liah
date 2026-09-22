@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Bandeja de handoffs · Panel Liah{% endblock %}
+{% block content %}
+<h2 style="margin-top:0">Bandeja de handoffs</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/admin/handoffs" class="row">
+    <select name="status">
+      <option value="" {% if not status_filter %}selected{% endif %}>Todos los estados</option>
+      <option value="open" {% if status_filter=='open' %}selected{% endif %}>Abiertos</option>
+      <option value="taken" {% if status_filter=='taken' %}selected{% endif %}>Tomados</option>
+      <option value="resolved" {% if status_filter=='resolved' %}selected{% endif %}>Resueltos</option>
+    </select>
+    {% if is_platform_admin and tenants %}
+    <select name="tenant_id">
+      <option value="">Todos los tenants</option>
+      {% for t in tenants %}
+      <option value="{{ t.id }}" {% if tenant_filter==t.id %}selected{% endif %}>{{ t.name }} ({{ t.slug }})</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <button class="btn" type="submit">Filtrar</button>
+  </form>
+</div>
+<div class="card" style="padding:0; overflow-x:auto">
+<table>
+  <thead><tr>
+    <th>Contacto</th><th>Motivo</th><th>Estado</th><th>Tomado por</th><th>Creado</th><th>Acciones</th>
+  </tr></thead>
+  <tbody>
+  {% for h in items %}
+  <tr id="row-{{ h.id }}">
+    <td><strong>{{ h.contact_name or '—' }}</strong><br><span class="mono muted">{{ h.contact_wa_id }}</span></td>
+    <td>{{ h.reason or '<span class="muted">sin motivo</span>' }}
+      {% if h.resolution_note %}<br><span class="muted">Nota: {{ h.resolution_note }}</span>{% endif %}</td>
+    <td><span class="pill {{ h.status }}">{{ h.status }}</span></td>
+    <td class="muted">{{ h.taken_by or '—' }}</td>
+    <td class="muted">{{ h.created_at[:16].replace('T',' ') }}</td>
+    <td>
+      <div class="row">
+      {% if h.status == 'open' %}
+        <button class="btn" onclick="take('{{ h.id }}')">Tomar</button>
+      {% endif %}
+      {% if h.status in ('open','taken') %}
+        <button class="btn ghost" onclick="resolve('{{ h.id }}')">Resolver</button>
+        <button class="btn warn" onclick="returnToBot('{{ h.id }}')">Devolver al bot</button>
+      {% endif %}
+      </div>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted" style="text-align:center; padding:2rem">Sin handoffs con estos filtros.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted">Mientras un handoff está abierto o tomado, el bot guarda silencio para ese contacto. "Devolver al bot" reactiva la respuesta automática.</p>
+{% endblock %}
+{% block scripts %}
+<script>
+async function take(id){
+  try { await api('/api/v1/admin/handoffs/'+id+'/take','POST'); toast('Handoff tomado'); location.reload(); }
+  catch(e){ toast(e.message,false); }
+}
+async function resolve(id){
+  const note = prompt('Nota de resolución (opcional):','') || '';
+  try { await api('/api/v1/admin/handoffs/'+id+'/resolve','POST',{note}); toast('Handoff resuelto'); location.reload(); }
+  catch(e){ toast(e.message,false); }
+}
+async function returnToBot(id){
+  if(!confirm('¿Devolver esta conversación al bot?')) return;
+  try { await api('/api/v1/admin/handoffs/'+id+'/return-to-bot','POST'); toast('Conversación devuelta al bot'); location.reload(); }
+  catch(e){ toast(e.message,false); }
+}
+</script>
+{% endblock %}
