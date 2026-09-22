@@ -4,7 +4,8 @@
 #   make up                      # postgres -> BD -> migraciones -> api + worker
 #   make seed-admin               # primer platform_admin del panel
 #   make onboard TENANT=mi-clinica TEMPLATE=consultorio_medico
-#   make demo                     # demo end-to-end (4 rutas)
+#   make demo                     # las 4 demos end-to-end (Fases 5 + 7e)
+#   make demo-consultorio       # solo la demo del consultorio (4 rutas, Fase 5)
 #   make down                     # detiene api + worker
 #
 # Variables:
@@ -36,7 +37,7 @@ OVERRIDES_JSON ?= {}
 
 LOGS := logs
 
-.PHONY: help venv up down migrate test onboard demo seed-admin check-db
+.PHONY: help venv up down migrate test onboard demo demo-consultorio demo-recursos demo-espejo demo-staff seed-admin check-db
 
 help:
 	@echo "Targets:"
@@ -45,7 +46,10 @@ help:
 	@echo "  make migrate    alembic upgrade head"
 	@echo "  make test       pytest (BD pyme_agent_test, sin proxies)"
 	@echo "  make onboard TENANT=slug [TEMPLATE=consultorio_medico] [ADMIN_EMAIL=...]"
-	@echo "  make demo       demo end-to-end del consultorio (4 rutas)"
+	@echo "  make demo-consultorio demo end-to-end del consultorio (4 rutas, Fase 5)"
+	@echo "  make demo-recursos demo del consultorio con recursos fijos + consentimiento (Fase 7e)"
+	@echo "  make demo-espejo demo del negocio móvil: buffers y traslados (Fase 7e)"
+	@echo "  make demo-staff  demo del modo staff por WhatsApp + briefing (Fase 7e)"
 	@echo "  make seed-admin primer platform_admin (LIAH_ADMIN_PASSWORD o prompt)"
 
 venv:
@@ -120,9 +124,24 @@ onboard: venv check-db
 		echo "ERROR: falló el onboarding (¿slug duplicado? ¿password <12 caracteres?"; \
 		echo "  ¿falta OPENAI_API_KEY? En dev sin key usa OVERRIDES_JSON='{\"model_routing\":{\"embedder\":\"fake\"}}')"; exit 1; }
 
-demo: venv
-	@echo "==> demo end-to-end (BD pyme_agent_demo; --reset borra)"
+demo: venv demo-consultorio demo-recursos demo-espejo demo-staff
+	@echo "==> todas las demos completadas"
+
+demo-consultorio: venv
+	@echo "==> demo end-to-end del consultorio (BD pyme_agent_demo; --reset borra)"
 	@"$(PY)" scripts/demo_consultorio.py $(DEMO_ARGS)
+
+demo-recursos: venv
+	@echo "==> demo consultorio con recursos fijos + consentimiento (BD pyme_agent_demo_recursos)"
+	@"$(PY)" scripts/demo_consultorio_recursos.py $(DEMO_ARGS)
+
+demo-espejo: venv
+	@echo "==> demo espejo mágico móvil: buffers y traslados (BD pyme_agent_demo_espejo)"
+	@"$(PY)" scripts/demo_espejo_magico.py $(DEMO_ARGS)
+
+demo-staff: venv
+	@echo "==> demo modo staff por WhatsApp + briefing (BD pyme_agent_demo_staff)"
+	@"$(PY)" scripts/demo_staff.py $(DEMO_ARGS)
 
 seed-admin: venv check-db
 	@echo "==> seed del primer platform_admin (LIAH_ADMIN_PASSWORD o prompt)"

@@ -79,6 +79,7 @@ from app.models import (  # noqa: E402
     Message,
     ReminderLog,
     Tenant,
+    TenantPrivacyTerms,
 )
 from app.models.conversations import MODE_HUMAN, get_or_create_conversation  # noqa: E402
 from app.reminders import scheduler as scheduler_mod  # noqa: E402
@@ -265,6 +266,18 @@ async def _ensure_faq_chunk(session, tenant_id) -> None:
 
 async def _get_or_create_contact(session, tenant_id, wa_id,
                                  name=None, consent="granted") -> Contact:
+    # Fase 7c: la puerta de privacidad exige granted + VERSIÓN vigente de
+    # los términos. Un contacto "granted" sin versión queda bloqueado al
+    # agendar, así que al otorgar se fija la versión actual del tenant.
+    terms_version = None
+    if consent == "granted":
+        terms_version = (
+            await session.execute(
+                select(TenantPrivacyTerms.version).where(
+                    TenantPrivacyTerms.tenant_id == tenant_id
+                )
+            )
+        ).scalar_one_or_none()
     contact = (
         await session.execute(
             select(Contact).where(
@@ -274,11 +287,19 @@ async def _get_or_create_contact(session, tenant_id, wa_id,
     ).scalar_one_or_none()
     if contact is None:
         contact = Contact(tenant_id=tenant_id, wa_id=wa_id, name=name,
-                          consent_status=consent)
+                          consent_status=consent,
+                          privacy_terms_version=terms_version)
         session.add(contact)
         await session.flush()
     elif contact.consent_status != consent:
         contact.consent_status = consent
+        contact.privacy_terms_version = terms_version
+        await session.flush()
+    elif (consent == "granted"
+          and contact.privacy_terms_version != terms_version):
+        # Contacto legacy (alta anterior a la puerta de privacidad):
+        # se auto-repara la versión sin cambiar nada más.
+        contact.privacy_terms_version = terms_version
         await session.flush()
     return contact
 
@@ -482,9 +503,15 @@ async def _route_handoff(session, tenant_id) -> tuple[bool, str]:
         return False, "el bot no devolvió el aviso de escalación"
 
     # 3b) El bot deja de responder: probado con el drenador REAL. Contacto
-    # nuevo por corrida (wa_id único) para no mezclar evidencia.
+    # nuevo por corrida (wa_id único) para no mezclar evidencia. Se da de
+    # alta con consentimiento ANTES del primer mensaje: si no, la puerta
+    # de privacidad (Fase 7c) enviaría el aviso en vez de escalar y la
+    # ruta probaría el gate, no el silencio tras el handoff.
     stamp = uuid.uuid4().hex[:8]
     wa = f"52155{stamp}"
+    async with sm() as s:
+        await _get_or_create_contact(s, tenant_id, wa, name="Paciente Demo")
+        await s.commit()
     llm_factory = lambda s_, t_, e_: _UrgencyLLM()  # noqa: E731
 
     def _change(wamid, text):
@@ -543,8 +570,12 @@ async def _route_handoff(session, tenant_id) -> tuple[bool, str]:
 
 async def _route_reminders(session, tenant_id, contact) -> tuple[bool, str]:
     sm = db_mod.async_session_maker
-    # Cita ~2h en el futuro (hora local del tenant): la regla
-    # appointment_reminder (24h y 2h, con consentimiento) debe disparar.
+    # La ruta reserva "ahora + 2h" truncado al minuto: entre corridas
+    # cercanas podría colisionar con la cita de la corrida anterior en el
+    # índice único (tenant_id, start_at), así que se limpia primero
+    # (mismo patrón que _cleanup_route2).
+    async with sm() as s:
+        await _cleanup_route2(s, tenant_id, contact.id)
     async with sm() as s:
         cal = MemoryCalendarAdapter(s, tenant_id, tz=TENANT_TZ)
         start = datetime.now(ZoneInfo(TENANT_TZ)) + timedelta(hours=2)

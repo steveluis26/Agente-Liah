@@ -281,6 +281,13 @@ async def _cmd_free(session, tenant_id, staff) -> str:
                 "pídele al administrador que lo configure."
             )
         resource = await session.get(Resource, staff.resource_id)
+        if resource is None:
+            # resource_id huérfano (el recurso se borró): no sobre-permitir
+            # (ver todo) ni crashear; se degrada como sin asignar.
+            return (
+                "Tu rol de especialista no tiene un recurso válido asignado; "
+                "pídele al administrador que lo revise."
+            )
 
     sts = (
         await session.execute(
